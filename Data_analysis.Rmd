@@ -1,0 +1,3128 @@
+
+---
+title: "COVID19 Blood Biomarker Analysis"
+author: "Dr Hamel Patel hamel.patel@kcl.ac.uk"
+date: "22/04/2020"
+output: rmdformats::readthedown
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+library(plotly)
+library(DT)
+library(tidyr)
+library(limma)
+library(EnhancedVolcano)
+library(Hmisc)
+library(Rmisc)
+
+
+```
+
+# BACKGROUND INFO
+
+## Pre-processing
+
+From [OLINKS website](https://www.olink.com/question/how-is-quality-control-of-the-data-performed/)
+
+Pre-processing and quality control of the data is performed using the Olink NPX Manager software. The built-in quality control (QC) allows us to have control over the technical performance of the assays as well as the samples, making sure that we can deliver reliable, high quality data. The basis of the QC depends on four internal controls that are spiked into all samples and external controls in every Olink Analysis.
+
+The quality control is divided into two parts:
+
+**Run evaluation**
+
+Standard deviations for Incubation Control 1, Incubation Control 2 and the Detection Control are calculated and should be below the predetermined threshold: 0.2 NPX, for the entire 96-well sample plate.
+
+**Sample evaluation**
+
+A sample plate median value is calculated for the Incubation Control 2 and the Detection Control, respectively. For each sample, the result for each of these internal controls is allowed to deviate no more than 0.3NPX from the plate median. If any or both of the internal controls exceed the 0.3NPX limit, the sample will fail the QC. If more than 1/6th of the samples fail the QC, the run is deemed unreliable. The reason for the issues will then be evaluated and (if applicable) samples will be rerun.
+
+The NPX Manager software displays the sample evaluation in two different views; the Plate View, showing NPX-values for each sample, and the QC view, showing deviation from the plate median in NPX units. In the example below, all samples but one, "Sample 11" in well B2, passes the QC. For that sample, the Incubation Control 2 and the Detection Control deviate about 0.7 NPX and 1 NPX from the plate median, respectively, and the sample will therefore fail the QC. The NPX values for this sample will be included in the data export file but indicated with red font.
+
+## NPX
+
+NPX, Normalized Protein eXpression, is Olink's arbitrary unit which is in Log2 scale.  It is calculated from Ct values and data pre-processing (normalization) is performed to minimize both intra- and inter-assay variation. NPX data allows users to identify changes for individual protein levels across their sample set, and then use this data to establish protein signatures.
+
+NPX is a relative quantification unit logarithmically related to protein concentration. Even if two different proteins have the same NPX values, their absolute concentrations may differ. NPX should be compared for each assay separately between samples within a run. NPX should not be compared between runs without proper inter-plate normalization due to the risk of falsely interpreting shifts in median between runs as a biological difference.
+
+<p style="color:red">NPX - a difference of 1 NPX equals a doubling of protein concentration</p>
+
+<p style="color:red">only 1 plate so NO need to cross normalise</p>
+
+## Detection threshold
+
+From [OLINKS website](https://www.olink.com/question/how-is-the-limit-of-detection-lod-estimated-and-handled/#):
+
+Limit of detection (LOD) is calculated separately for each Olink assay and sample plate. The LOD is based on the background, estimated from negative controls included on every plate, plus three standard deviations. The standard deviation is assay specific and estimated during product validation for every panel.
+
+For studies including more than one plate per panel, the maximum observed LOD for each assay is selected as study LOD. Consequently, all plates included in the study receive the same assay specific LOD. The estimated LOD is a conservative measurement especially in large multiplate studies where there is high probability that observed data is in fact above the true background signal.
+
+**Consider excluding assays with low detection from analysis**
+Olink recommends that assays with a large proportion of samples below LOD is excluded from the analysis. The limit for exclusion should be decided on a study basis and consider design including sample size and experimental variables. <p style="color:red">Suitable exclusion limits may be in the range of less than 25-50% of samples above LOD.
+
+**Characteristics of data below LOD**
+As with all affinity based assays, data from Olink's platform have a S-curve (sigmoid) relationship with the true protein concentration in a sample. Data below LOD have a higher risk to be in the non-linear phase of the S-curve meaning that 1 NPX difference may not correspond to 2x protein concentration in this region. This may bias estimates including data below LOD and should be considered when interpreting any results that are based on data below LOD
+
+**Strategies for handling data below LOD in data analysis**
+Several strategies exist for handling data below LOD that varies in complexity. Olink delivers data below LOD to allow researches to choose the strategy that is best for their study and interpret results with the complexity of data below LOD in mind. Some examples of strategies include:
+
++ <p style="color:red">Replace data below LOD: It is common to replace data below LOD with a specific value. This will left-censor the data which creates a skewed distribution. Estimates of, for example, mean will be biased and parametric statistical tests may have lower statistical power. Common values to use for replacement is the value for LOD or LOD/(sqrt(2). The latter have been reported in literature to give less biased estimate of means.</p>
++ Use actual data below LOD: As data below LOD may be non-linear, estimates of for example mean may be biased. However, especially in large multiplate studies LOD is a conservative measurement. Using actual data may increase the statistical power and give a less skewed distribution compared to replace data below LOD with a value.
++ Impute data below LOD: A more complex approach for handling data below LOD is to impute the true value. Several methods for imputation exist and includes maximum-likelihood estimation (MLE) of the distribution below LOD.
++ Set data below LOD to missing: Olink do not recommend that data below LOD is excluded from analysis as the most distinct biomarkers may have a low concentration under specific conditions.
+
+
+# DATA - INFO
+
+<p style="color:red">Groups:</p>
+
++ 0 = Control
++ 1 = Mild symptoms
++ 2 = Moderate symptoms 
++ 3 = Severe symptoms (ICU)
+
+<p style="color:red">Data:</p>
+
++ Background corrected + log2 transformed + normalised (by OLINKs software)
++ Expression measured in NPX 
++ Rows with NA have failed the assay
++ Rows where value is less than detection threshold (LOD) means the expression value is still valid, but expression value is just to low to accurately quantify
++ Data has been reformatted to create two tables:
+  + Expression data - contains sample information and expression data using OLINK ID. OLINK ID used as they are unique.
+  + Assay info - contains information on the assay, i.e panel, OLINK ID, Uniprot ID, etc..
+
+<p style="color:red">Batch</p>
+
++ one plate - 93 samples + 368 proteins (plate can do 90 samples + 6 controls only according to OLINKS - maybe contains controls?)
+
+
+**ADDTIONAL PROTEIN MEASURES ADDED**
+
++ Tau 
++ Nfl
++ GFAP
+
+These were measured using the Simoa method and will be analysed seperately 
+
+
+## Analysis plan:
+
+1. Remove failed samples - rows with NA/blank
+2. Remove proteins where expression is < LOD in 50% of samples per group - calculated per group (0,1,2,3). protein need to have low LOD in all groups to be considered for removal
+3. Expression values below LOD converted to LOD/sqrt(2). Negative expression values left as is (recommended by OLINK)
+4. Set cell values lower than LOD to LOD/(sqrt2) (as recommended by OLINKS)
+5. Linear regression - limma:
+    + 0 vs 1
+    + 0 vs 2
+    + 0 vs 3
+    + 0 vs 1,2,3 (grouped - case vs control)
+    + 0 vs 1 vs 2 vs 3 vs 4
+    + longitudinal - 6 patients from mild an 6 patients from severe
+6. Visualisation:
+    + volcano
+    + Boxplot
+
+# DATA EXPLORATION
+
+
+## Read Data set wd
+
+``` {r}
+
+# pc
+output_dir<-"D:/Dropbox/Projects/COVID19_blood_biomarker/Analysis"
+
+#laptop
+#output_dir<-"C:/Users/hamel/Dropbox/Projects/COVID19_blood_biomarker/Analysis"
+
+# read - pc
+protein_data<-read.csv("D:/Dropbox/Projects/COVID19_blood_biomarker/Data/protein_expression_data.txt", sep="\t", head=T, fill=T)
+assay_data<-read.csv("D:/Dropbox/Projects/COVID19_blood_biomarker/Data/protein_info.txt", sep="\t", head=T)
+
+# read - laptop
+#protein_data<-read.csv("C:/Users/hamel/Dropbox/Projects/COVID19_blood_biomarker/Data/protein_expression_data.txt", sep="\t", head=T, fill=T)
+#assay_data<-read.csv("C:/Users/hamel/Dropbox/Projects/COVID19_blood_biomarker/Data/protein_info.txt", sep="\t", head=T)
+
+# dim
+dim(protein_data)
+
+```
+## Add sample ID
+
+Adding a sample ID to give each sample a unique ID. ID will be "sample" + a number:
+
+1. sample1
+2. sample2
+3. sample4
+4. etc...
+
+```{r}
+
+# add sample id
+rownames(protein_data)<-paste("sample",rownames(protein_data), sep="")
+
+# check
+head(protein_data)[1:10]
+```
+## Groups
+
+Groups:
+
++ 0 = control
++ 1 = Mild symptoms
++ 2 = Moderate symptoms 
++ 3 = Severe symptoms (ICU)
+
+<p style="color:red">The number of samples per group:</p>
+
+``` {r}
+
+table(protein_data$Group)
+
+```
+
+
+## Number of duplicate samples
+
+Some patients were assayed again at a different time point. 
+
+<p style="color:red">This how many duplicates there are by patient ID:</p>
+
+``` {r}
+
+# count duplicate by pat.code
+duplicate_count<-as.data.frame(table(protein_data$Pat.Code))
+
+# count where more than 1
+nrow(subset(duplicate_count, Freq > 1))
+
+# duplicate samples
+duplicate_samples<-protein_data[protein_data$Pat.Code %in% subset(duplicate_count, Freq > 1)$Var1,]
+
+# freq by group
+table(duplicate_samples[1])
+
+
+```
+
+<p style="color:red">Calculating time difference between longitudinal data in group 1:</p>
+
+
+```{r}
+
+# seperate by group and check difference in Days.since.onset
+group1_duplicates_temp<-duplicate_samples[duplicate_samples$Group==1,][c(2,3)]
+
+# data frame to store data
+group1_duplicates<-as.data.frame(matrix(nrow=6, ncol=3))
+
+# collapse by duplicate sample ID
+temp_counter=1
+for (x in seq(1,12,2)) {
+    group1_duplicates[temp_counter,c(1,2)]<-group1_duplicates_temp[c(x),]
+    group1_duplicates[temp_counter,3]<-group1_duplicates_temp[c(x+1),2]
+    temp_counter=temp_counter+1
+  }
+
+# remove temp files
+rm(temp_counter, group1_duplicates_temp)
+
+# add colnames
+colnames(group1_duplicates)<-c("Pat.Code", "1st_sample", "2nd_sample")
+
+# calculate diff
+group1_duplicates$time_diff<-as.numeric(group1_duplicates$`2nd_sample`)- as.numeric(group1_duplicates$`1st_sample`)
+
+# table
+datatable(group1_duplicates)
+
+# average of diggerence
+summary(group1_duplicates$time_diff)
+
+```
+
+
+<p style="color:red">Calculating time difference between longitudinal data in group 3:</p>
+
+
+```{r}
+
+# seperate by group and check difference in Days.since.onset
+group3_duplicates_temp<-duplicate_samples[duplicate_samples$Group==3,][c(2,3)]
+
+# data frame to store data
+group3_duplicates<-as.data.frame(matrix(nrow=6, ncol=3))
+
+# collapse by duplicate sample ID
+temp_counter=1
+for (x in seq(1,12,2)) {
+  group3_duplicates[temp_counter,c(1,2)]<-group3_duplicates_temp[c(x),]
+  group3_duplicates[temp_counter,3]<-group3_duplicates_temp[c(x+1),2]
+  temp_counter=temp_counter+1
+}
+
+# remove temp files
+rm(temp_counter, group3_duplicates_temp)
+
+# add colnames
+colnames(group3_duplicates)<-c("Pat.Code", "1st_sample", "2nd_sample")
+
+# calculate diff
+group3_duplicates$time_diff<-as.numeric(group3_duplicates$`2nd_sample`)- as.numeric(group3_duplicates$`1st_sample`)
+
+# table
+datatable(group3_duplicates)
+
+# average of diggerence
+summary(group3_duplicates$time_diff)
+
+```
+
+<p style="color:red">**Summary**</p>
+
+12 patients have been repeated twice:
+
++ 6 from group 1 (mild)
++ 6 from group 3 (severe)
+
+Group 1 average time difference between repeated samples is 16 days
+
+Group 3 avarage time difference between repeated samples is 3 days
+
+## Number of duplicate proteins
+
+some proteins repeated on different assay
+
+```{r}
+
+head(assay_data)
+
+length(unique(assay_data$OLINK.ID))
+length(unique(assay_data$Uniprot.ID))
+length(unique(assay_data$Gene.ID))
+
+
+```
+
+## Expression plots
+
+Basic boxplots
+
+``` {r, warnings=F}
+
+# format data
+boxplot_data_pre_qc<-stack(as.data.frame(t(protein_data[10:ncol(protein_data)])))
+
+# add group
+boxplot_data_pre_qc<-merge(boxplot_data_pre_qc, protein_data[1], by.x="ind", by.y="row.names")
+
+# format
+colnames(boxplot_data_pre_qc)<-c("Sample", "NPX", "Group")
+
+# recode group
+boxplot_data_pre_qc$Group[boxplot_data_pre_qc$Group=="0"]<-"Control"
+boxplot_data_pre_qc$Group[boxplot_data_pre_qc$Group=="1"]<-"Mild"
+boxplot_data_pre_qc$Group[boxplot_data_pre_qc$Group=="2"]<-"Moderate"
+boxplot_data_pre_qc$Group[boxplot_data_pre_qc$Group=="3"]<-"Severe"
+
+# plot
+ggplotly(ggplot(data=boxplot_data_pre_qc, aes(x = Sample, y = NPX, fill=Group)) +
+           geom_boxplot() +
+           ggtitle("Distribution of protein expression") +
+           theme(plot.title = element_text(hjust = 0.5)))
+
+```
+
+## Density plot
+
+Density plots
+
+```{r}
+
+# by group
+ggplot(boxplot_data_pre_qc, aes(x=NPX, colour=Group)) +
+  geom_density() +
+  ggtitle("Expression density by Group") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#by sample
+ggplotly(ggplot(boxplot_data_pre_qc, aes(x=NPX, colour=Sample)) +
+           geom_density() +
+           ggtitle("Expression density by sample") +
+           theme(plot.title = element_text(hjust = 0.5), legend.position = "none"))
+
+
+```
+
+# DATA PROCESSING
+## Remove samples which are all empty - NA in all rows
+
+There are 4 assays, each with 92 proteins. total = 368
+
+<p style="color:red">Number of missing prtoein measures by sample (ordered by missingess):</p>
+
+``` {r}
+
+# check samples with mising
+sort(rowSums(is.na(protein_data)))
+
+
+```
+
+
+
+Six samples with missing data and 1 sample with 50% missing (Sample2)
+
+
+Investigating sample 2:
+
+``` {r}
+
+# find missingness by sample 2
+sample_2_missingness<-as.data.frame(t(protein_data[2,10:ncol(protein_data)]))
+
+# merge with assay data
+sample_2_missingness<-merge(sample_2_missingness, assay_data[c(1,4)], by.x="row.names", by.y="OLINK.ID")
+
+# change colnames
+colnames(sample_2_missingness)<-c("OLINK.ID", "NPX", "Assay")
+
+# change all numeric value to 1
+sample_2_missingness[!(is.na(sample_2_missingness$NPX)),2]<-1
+
+# contingency table
+table(sample_2_missingness$NPX, sample_2_missingness$Assay)
+
+```
+
+
+<p style="color:red">**Summary of sample2:**</p>
+
++ Sample2 is a mild symptom patient missing from the immune response and neurology assay (sample kept in)
++ It is also a duplicated sample of sample1. 
++ We can remove this sample for the immune and neurology assay.
+
+
+<p style="color:red">Following samples removed (all missing expression values):</p>
+
+1. sample51 
+2. sample72 
+3. sample76 
+4. sample80 
+5. sample83 
+6. sample88
+
+``` {r}
+
+# make list of samples to remove
+samples_to_remove<-rownames(as.data.frame(tail(sort(rowSums(is.na(protein_data))), 6)))
+
+# The samples eing removed belong to group:
+protein_data[rownames(protein_data) %in% samples_to_remove,1]
+
+# remove from expression
+protein_data_clean<-protein_data[!(rownames(protein_data) %in% samples_to_remove),]
+
+# check
+sort(rowSums(is.na(protein_data_clean)))
+
+
+```
+## List proteins with high LOD rate + NA
+
+Proteins with > 50% LOD in all groups are removed.
+
+Making a list of proteins where more than 50% are below the LOD for each group
+
+```{r}
+
+#create subset of group 0 (exprs only)
+group0_exprs<-(subset(protein_data_clean, protein_data_clean$Group==0))[10:ncol(protein_data_clean)]
+dim(group0_exprs)
+
+#create subset of group 1 (exprs only)
+group1_exprs<-(subset(protein_data_clean, protein_data_clean$Group==1))[10:ncol(protein_data_clean)]
+dim(group1_exprs)
+
+#create subset of group 2 (exprs only)
+group2_exprs<-(subset(protein_data_clean, protein_data_clean$Group==2))[10:ncol(protein_data_clean)]
+dim(group2_exprs)
+
+#create subset of group 3 (exprs only)
+group3_exprs<-(subset(protein_data_clean, protein_data_clean$Group==3))[10:ncol(protein_data_clean)]
+dim(group3_exprs)
+
+#check protein order same as assay data
+all(colnames(group0_exprs)==assay_data$OLINK.ID)==T
+all(colnames(group1_exprs)==assay_data$OLINK.ID)==T
+all(colnames(group2_exprs)==assay_data$OLINK.ID)==T
+all(colnames(group3_exprs)==assay_data$OLINK.ID)==T
+
+#create count file
+missingness<-assay_data[4]
+
+#add groups
+missingness$Group0<-0
+missingness$Group1<-0
+missingness$Group2<-0
+missingness$Group3<-0
+
+#count group 0
+for (x in 1:nrow(missingness)) {
+  missingness[x,2]<-(length(group0_exprs[x][group0_exprs[x]<assay_data$LOD[x]])/nrow(group0_exprs))*100
+}
+
+#count group 1
+for (x in 1:nrow(missingness)) {
+  missingness[x,3]<-(length(group1_exprs[x][group1_exprs[x]<assay_data$LOD[x]])/nrow(group1_exprs))*100
+}
+
+#count group 2
+for (x in 1:nrow(missingness)) {
+  missingness[x,4]<-(length(group2_exprs[x][group2_exprs[x]<assay_data$LOD[x]])/nrow(group2_exprs))*100
+}
+
+#count group 3
+for (x in 1:nrow(missingness)) {
+  missingness[x,5]<-(length(group3_exprs[x][group3_exprs[x]<assay_data$LOD[x]])/nrow(group3_exprs))*100
+}
+
+```
+
+Count the number of proteins where expression values are < LOD per group
+
+This is the count of proteins with > 50% missingness per group.
+
+```{r}
+# move OLINK ID to rowname and remove from file
+rownames(missingness)<-missingness$OLINK.ID
+missingness$OLINK.ID<-NULL
+
+#count per group
+apply(missingness, 2, function(x) {sum(x>50)})
+
+#count across group where missiness is over 50%
+missingness_across_groups<-as.data.frame(apply(missingness, 1, function(x) {sum(x>50)}))
+colnames(missingness_across_groups)<-"missingness_count"
+
+# This is the count of 50% across groups.
+table(missingness_across_groups)
+
+
+```
+
+<p style="color:red">**Summary of protein missingness**</p>
+
++ 13 proteins have >50% missingness across all groups
++ 6 proteins have >50% missingness across 3 groups
++ 4 proteins have >50% missingness across 2 groups
++ 4 proteins have >50% missingness across 1 groups
++ 341 proteins DON'T have >50% missingess in any group
+
+
+list of proteins to remove. i.e missingness over 50% in all groups
+
+```{r}
+
+proteins_to_remove<-rownames(subset(missingness_across_groups, missingness_across_groups$missingness_count==4))
+
+```
+
+
+## Remove proteins with high LOD + NA across all groups
+
+<p style="color:red">Remove the 13 proteins from expression </p>
+
+```{r}
+
+# proteins to remove
+length(proteins_to_remove)
+
+# number of proteins
+length(colnames(protein_data_clean[10:ncol(protein_data_clean)]))
+
+# remove proteins
+protein_data_clean<-protein_data_clean[!(colnames(protein_data_clean) %in% proteins_to_remove)]
+
+# number of proteins
+length(colnames(protein_data_clean[10:ncol(protein_data_clean)]))
+
+```
+
+Remove proteins from assay data
+
+
+``` {r}
+
+# number of proteins
+length(rownames(assay_data))
+
+# remove proteins
+assay_data_clean<-assay_data[!(assay_data$OLINK.ID %in% proteins_to_remove),]
+
+# number of proteins
+length(rownames(assay_data_clean))
+
+
+```
+
+check expression data and assay data has same proteins
+
+```{r}
+
+all(assay_data_clean$OLINK.ID==colnames(protein_data_clean[10:ncol(protein_data_clean)]))==T
+
+```
+
+## Replace low expression
+
+How many expression values < LOD in data:
+
+```{r}
+
+# extract expression table only
+exprs_only<-protein_data_clean[10:ncol(protein_data_clean)]
+
+# check protein order same
+all(colnames(exprs_only)==assay_data_clean$OLINK.ID)
+
+# count total number of cells with value less than its LOD
+total_low_LOD_count<-assay_data_clean[4]
+total_low_LOD_count$missingness<-0
+
+# individual count
+for (x in 1:nrow(total_low_LOD_count)) {
+  total_low_LOD_count[x,2]<-length(na.omit(exprs_only[x][exprs_only[x] < assay_data_clean$LOD[x]]))
+}
+
+# total number of expression values below LOD
+sum(total_low_LOD_count$missingness)
+
+# total number of proteins with an expression value less than LOD
+nrow(subset(total_low_LOD_count, total_low_LOD_count$missingness!=0))
+
+# number of proteins with an expression value less than LOD - what panels are they in
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% subset(total_low_LOD_count, total_low_LOD_count$missingness!=0)$OLINK.ID,]$Assay)
+
+```
+
+Change these low LOD values to LOD/sqrt(2)
+
+
+```{r}
+
+# for each column, replace values lower than LOD to LOD/sqrt(2) 
+for (x in 1:ncol(exprs_only)) {
+  exprs_only[x]<-replace(exprs_only[x], 
+                   exprs_only[x] < assay_data_clean$LOD[x], 
+                   assay_data_clean$LOD[x]/(sqrt(2)))
+}
+
+
+```
+
+
+Check again how many value are less than LOD. This time have to check if values is less than the new assigned value LOD/sqrt(2)
+
+```{r}
+
+# count less than LOD/sqrt(2)
+total_low_LOD_count$missingness2<-0
+
+# individual count
+for (x in 1:nrow(total_low_LOD_count)) {
+  total_low_LOD_count[x,3]<-length(na.omit(exprs_only[x][exprs_only[x] < assay_data_clean$LOD[x]/(sqrt(2))]))
+  }
+
+# count
+sum(total_low_LOD_count$missingness2)
+
+```
+
+Replace expression data in clean data
+
+```{r}
+
+#replace exression data
+protein_data_clean[10:ncol(protein_data_clean)]<-exprs_only
+
+#check coloumns still in order
+all(colnames(protein_data_clean)[10:ncol(protein_data_clean)]==assay_data_clean$OLINK.ID)==T
+
+```
+
+# POST PROCESSING CHECKS
+
+## PCA
+
+Performing PCA prior to data processing. PCA does not handle missing values, so proteins with missingnes are removed.
+
+``` {r}
+
+# pca - remove NAs - PCA does not like them
+pca_data_na_removed<-na.omit(as.data.frame(t(protein_data_clean[10:ncol(protein_data_clean)])))
+
+# numbr of proteins remaining 
+nrow(pca_data_na_removed)
+
+# run PCA
+pca_data<-prcomp(pca_data_na_removed)
+
+# summary
+summary(pca_data)
+
+# extract PC1 and PC2
+PC1_plot<-pca_data$rotation[,1:2]
+
+# add phenotype information to PC information
+PC1_plot<-cbind(PC1_plot, protein_data_clean[c(1,3,4,5)])
+PC1_plot$Group<-as.character(PC1_plot$Group)
+
+# ggplot plot 
+ggplotly(ggplot(data=PC1_plot, aes(x=PC1, y=PC2, col=Group)) +
+  # scatterplot
+  geom_point() +
+  # add title to plot
+  ggtitle("PC1 vs PC2 by Group") +
+  # centre title 
+  theme(plot.title = element_text(hjust = 0.5)))
+
+
+
+```
+
+plot by Ethnicity
+
+```{r}
+
+# ggplot plot 
+ggplotly(ggplot(data=PC1_plot, aes(x=PC1, y=PC2, col=Etnicity)) +
+  # scatterplot
+  geom_point() +
+  # add title to plot
+  ggtitle("PC1 vs PC2 by Ethnicity") +
+  # centre title 
+  theme(plot.title = element_text(hjust = 0.5)))
+
+
+```
+
+<p style="color:red">Ethinicity for all controls are uknown</p>
+
+plot by Gender
+
+```{r}
+
+# ggplot plot 
+ggplotly(ggplot(data=PC1_plot, aes(x=PC1, y=PC2, col=Days.since.onset)) +
+  # scatterplot
+  geom_point() +
+  # add title to plot
+  ggtitle("PC1 vs PC2 by Days.since.onset") +
+  # centre title 
+  theme(plot.title = element_text(hjust = 0.5)))
+
+
+```
+
+
+
+## Expression boxplot
+
+Data expression plot aftr QC
+
+Basic boxplots
+
+``` {r, warnings=F}
+
+# format data
+boxplot_data_post_qc<-stack(as.data.frame(t(protein_data_clean[10:ncol(protein_data_clean)])))
+
+# add group
+boxplot_data_post_qc<-merge(boxplot_data_post_qc, protein_data_clean[1], by.x="ind", by.y="row.names")
+
+# format
+colnames(boxplot_data_post_qc)<-c("Sample", "NPX", "Group")
+
+# recode group
+boxplot_data_post_qc$Group[boxplot_data_post_qc$Group=="0"]<-"Control"
+boxplot_data_post_qc$Group[boxplot_data_post_qc$Group=="1"]<-"Mild"
+boxplot_data_post_qc$Group[boxplot_data_post_qc$Group=="2"]<-"Moderate"
+boxplot_data_post_qc$Group[boxplot_data_post_qc$Group=="3"]<-"Severe"
+
+# plot
+ggplotly(ggplot(data=boxplot_data_post_qc, aes(x = Sample, y = NPX, fill=Group)) +
+           geom_boxplot() +
+           ggtitle("Distribution of protein expression") +
+           theme(plot.title = element_text(hjust = 0.5)))
+
+```
+
+## Density plot
+
+Density plots
+
+```{r}
+
+# by group
+ggplot(boxplot_data_post_qc, aes(x=NPX, colour=Group)) +
+  geom_density() +
+  ggtitle("Expression density by Group") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#by sample
+ggplotly(ggplot(boxplot_data_post_qc, aes(x=NPX, colour=Sample)) +
+           geom_density() +
+           ggtitle("Expression density by sample") +
+           theme(plot.title = element_text(hjust = 0.5), legend.position = "none"))
+
+
+```
+
+# POST QC
+
+create function to merge differenital expression results with protein ID. also used in correlation analysis, hence shifted up to here.
+
+```{r}
+
+# create protein mapping file to merge with DE results
+protein_mapping<-assay_data_clean[c(1,2,3,4)]
+# change rownames
+rownames(protein_mapping)<-protein_mapping$OLINK.ID
+protein_mapping$OLINK.ID<-NULL
+# modify assay name
+protein_mapping$Assay<-as.character(protein_mapping$Assay)
+protein_mapping$Assay[protein_mapping$Assay=="Olink CARDIOVASCULAR II(v.5006)"]<-"Cardiovascular"
+protein_mapping$Assay[protein_mapping$Assay=="Olink IMMUNE RESPONSE(v.3203)"]<-"Immune"
+protein_mapping$Assay[protein_mapping$Assay=="Olink INFLAMMATION(v.3022)"]<-"Inflammation"
+protein_mapping$Assay[protein_mapping$Assay=="Olink NEUROLOGY(v.8012)"]<-"Neurology"
+
+#check table
+table(protein_mapping$Assay)
+
+merge_protin_ID<-function(x){
+  # merge
+  temp<-merge(protein_mapping, x, by="row.names")
+  # move rownames
+  rownames(temp)<-temp$Row.names
+  temp$Row.names<-NULL
+  # reorder by most sig
+  temp<-temp[order(temp$adj.P.Val, -abs(temp$logFC)),]
+  return(temp)
+}
+
+```
+
+
+
+## Groups
+
+Groups:
+
++ 0 = control
++ 1 = Mild symptoms
++ 2 = Moderate symptoms 
++ 3 = Severe symptoms (ICU)
+
+The number of samples per group:
+
+``` {r}
+
+table(protein_data_clean$Group)
+
+```
+
+## Age
+
+- summarise all into a table
+
+summary of age
+
+``` {r}
+# overall age
+summary(protein_data_clean$Age)
+
+# 95 CI by group 
+
+CI(subset(protein_data_clean, protein_data_clean$Group==0)$Age, ci=0.95)
+CI(subset(protein_data_clean, protein_data_clean$Group==1)$Age, ci=0.95)
+CI(subset(protein_data_clean, protein_data_clean$Group==2)$Age, ci=0.95)
+CI(subset(protein_data_clean, protein_data_clean$Group==3)$Age, ci=0.95)
+
+# CI for all cases
+CI(subset(protein_data_clean, !(protein_data_clean$Group==0))$Age, ci=0.95)
+
+
+ggplot(data=protein_data_clean, aes(x=as.character(Group), y=Age, fill=Group)) +
+  geom_boxplot() +
+  ggtitle("Distribution of age by group") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+<p style="color:red">T-test of Group 0 vs 1 (control vs mild)</p>
+
+```{r}
+
+# group 0 vs 1
+t.test(protein_data_clean[protein_data_clean$Group==0,6], protein_data_clean[protein_data_clean$Group==1,6])
+
+```
+
+<p style="color:red">T-test of Group 0 vs 2 (control vs moderate)</p>
+
+```{r}
+
+# group 0 vs 2
+t.test(protein_data_clean[protein_data_clean$Group==0,6], protein_data_clean[protein_data_clean$Group==2,6])
+
+```
+
+<p style="color:red">T-test of Group 0 vs 3 (control vs severe)</p>
+
+```{r}
+
+# group 0 vs 3
+t.test(protein_data_clean[protein_data_clean$Group==0,6], protein_data_clean[protein_data_clean$Group==3,6])
+
+```
+
+<p style="color:red">T-test of Group 1 vs 2 (mild vs moderate)</p>
+
+```{r}
+
+# group 1 vs 2
+t.test(protein_data_clean[protein_data_clean$Group==1,6], protein_data_clean[protein_data_clean$Group==2,6])
+
+```
+
+<p style="color:red">T-test of Group 1 vs 3 (mild vs severe)</p>
+
+```{r}
+
+# group 1 vs 3
+t.test(protein_data_clean[protein_data_clean$Group==1,6], protein_data_clean[protein_data_clean$Group==3,6])
+
+```
+
+<p style="color:red">T-test of Group 2 vs 3 (moderate vs severe)</p>
+
+```{r}
+
+# group 2 vs 3
+t.test(protein_data_clean[protein_data_clean$Group==2,6], protein_data_clean[protein_data_clean$Group==3,6])
+
+```
+
+<p style="color:red">T-test of Group 0 vs 1,2,3 (control vs case)</p>
+
+```{r}
+
+# group 0 vs 1,2,3
+t.test(protein_data_clean[protein_data_clean$Group==0,6], protein_data_clean[protein_data_clean$Group %in% c(1,2,3),6])
+
+```
+
+<p style="color:red">**Summary of Age**</p>
+
++ Significant difference between group 0 and 1 only
++ no significant differnce when comparing controls against all cases (grouped)
+
+## Gender
+  
+- summarise all into a table (Fisher is better for smaller numbers)
+
+summary of Gender
+
+``` {r}
+# overall Gender
+table(protein_data_clean$Gender)
+
+# gender by disease group
+table(protein_data_clean$Gender, protein_data_clean$Group)
+
+```
+
+<p style="color:red">Fisher test of Group 0 vs 1 (control vs mild)</p>
+  
+```{r}
+
+# extract
+group_0_vs_1_GG<-protein_data_clean[protein_data_clean$Group==0 | protein_data_clean$Group==1,]
+# test
+fisher.test(table(group_0_vs_1_GG$Group, group_0_vs_1_GG$Gender))
+
+```
+
+<p style="color:red">Fisher test of Group 0 vs 2 (control vs moderate)</p>
+  
+```{r}
+# extract
+group_0_vs_2_GG<-protein_data_clean[protein_data_clean$Group==0 | protein_data_clean$Group==2,]
+# test
+fisher.test(table(group_0_vs_2_GG$Group, group_0_vs_2_GG$Gender))
+
+```
+
+<p style="color:red">Fisher test of Group 0 vs 3 (control vs severe)</p>
+  
+```{r}
+# extract
+group_0_vs_3_GG<-protein_data_clean[protein_data_clean$Group==0 | protein_data_clean$Group==3,]
+# test
+fisher.test(table(group_0_vs_3_GG$Group, group_0_vs_3_GG$Gender))
+
+```
+
+<p style="color:red">Fisher test of Group 1 vs 2 (control vs severe)</p>
+  
+```{r}
+# extract
+group_1_vs_2_GG<-protein_data_clean[protein_data_clean$Group==1 | protein_data_clean$Group==2,]
+# test
+fisher.test(table(group_1_vs_2_GG$Group, group_1_vs_2_GG$Gender))
+
+```
+
+<p style="color:red">Fisher test of Group 1 vs 3 (control vs severe)</p>
+  
+```{r}
+# extract
+group_1_vs_3_GG<-protein_data_clean[protein_data_clean$Group==1 | protein_data_clean$Group==3,]
+# test
+fisher.test(table(group_1_vs_3_GG$Group, group_1_vs_3_GG$Gender))
+
+```
+
+<p style="color:red">Fisher test of Group 2 vs 3 (control vs severe)</p>
+  
+```{r}
+# extract
+group_2_vs_3_GG<-protein_data_clean[protein_data_clean$Group==2 | protein_data_clean$Group==3,]
+# test
+fisher.test(table(group_2_vs_3_GG$Group, group_2_vs_3_GG$Gender))
+
+```
+
+
+<p style="color:red">Fisher test of Group 0 vs 1,2,3 (control vs case)</p>
+  
+```{r}
+
+# extract
+case_vs_control_GG<-protein_data_clean
+case_vs_control_GG$Group<-ifelse(case_vs_control_GG$Group==0, "control", "case")
+
+# test
+fisher.test(table(case_vs_control_GG$Group, case_vs_control_GG$Gender))
+
+```
+
+<p style="color:red">**Summary of Gender**</p>
+  
++ Signiicantly More Males than females in 0 vs 3, 1 vs 3
++ no significant differnce when comparing controls against all cases (grouped)
+
+## Ethnicity
+
+Ethnicity by group
+
+```{r}
+
+table(protein_data_clean$Etnicity, protein_data_clean$Group)
+
+```
+
+## Number of duplicate samples
+
+Check if we removed any duplicates
+
+``` {r}
+
+# count duplicate by pat.code
+duplicate_count_after_qc<-as.data.frame(table(protein_data_clean$Pat.Code))
+
+# count where more than 1
+nrow(subset(duplicate_count_after_qc, Freq > 1))
+
+# duplicate samples
+duplicate_samples_after_qc<-protein_data_clean[protein_data_clean$Pat.Code %in% subset(duplicate_count_after_qc, Freq > 1)$Var1,]
+
+# freq by group
+table(duplicate_samples_after_qc[1])
+
+# extract sample info
+datatable(duplicate_samples_after_qc[1:4], options = list(pageLength = 24))
+
+```
+
+<p style="color:red">**Summary of duplicates after QC**</p>
+
++ one set of duplicates lost from group3.
++ Group1: 12 samples (6 patients)
++ Group3: 10 samples (5 patients)
+
+## Number of duplicate proteins
+
+some proteins repeated on different assay
+
+```{r}
+
+head(assay_data)
+
+length(unique(assay_data_clean$OLINK.ID))
+length(unique(assay_data_clean$Uniprot.ID))
+length(unique(assay_data_clean$Gene.ID))
+
+
+```
+
+## Time difference for longitudinal data
+
+Calculating time difference between longitudinal data in group 1
+
+
+```{r}
+
+# seperate by group and check difference in Days.since.onset
+group1_duplicates_after_qc_temp2<-duplicate_samples_after_qc[duplicate_samples_after_qc$Group==1,][c(2,3)]
+
+# data frame to store data
+group1_duplicates_after_qc<-as.data.frame(matrix(nrow=6, ncol=3))
+
+# collapse by duplicate sample ID
+temp_counter=1
+for (x in seq(1,12,2)) {
+  group1_duplicates_after_qc[temp_counter,c(1,2)]<-group1_duplicates_after_qc_temp2[c(x),]
+  group1_duplicates_after_qc[temp_counter,3]<-group1_duplicates_after_qc_temp2[c(x+1),2]
+  temp_counter=temp_counter+1
+}
+
+# remove temp files
+rm(temp_counter, group1_duplicates_after_qc_temp2)
+
+# add colnames
+colnames(group1_duplicates_after_qc)<-c("Pat.Code", "1st_sample", "2nd_sample")
+
+# calculate diff
+group1_duplicates_after_qc$time_diff<-as.numeric(group1_duplicates_after_qc$`2nd_sample`)- as.numeric(group1_duplicates_after_qc$`1st_sample`)
+
+# table
+datatable(group1_duplicates_after_qc)
+
+```
+
+
+<p style="color:red">This is the time difference in repeat sampling in group 1</p>
+
+
+```{r}
+
+# average of difference
+summary(group1_duplicates_after_qc$time_diff)
+
+```
+
+
+Calculating time difference between longitudinal data in group 3
+
+
+```{r}
+
+# seperate by group and check difference in Days.since.onset
+group3_duplicates_after_qc_temp<-duplicate_samples_after_qc[duplicate_samples_after_qc$Group==3,][c(2,3)]
+
+# data frame to store data
+group3_duplicates_after_qc<-as.data.frame(matrix(nrow=5, ncol=3))
+
+# collapse by duplicate sample ID
+temp_counter=1
+for (x in seq(1,10,2)) {
+  group3_duplicates_after_qc[temp_counter,c(1,2)]<-group3_duplicates_after_qc_temp[c(x),]
+  group3_duplicates_after_qc[temp_counter,3]<-group3_duplicates_after_qc_temp[c(x+1),2]
+  temp_counter=temp_counter+1
+}
+
+# remove temp files
+rm(temp_counter, group3_duplicates_after_qc_temp)
+
+# add colnames
+colnames(group3_duplicates_after_qc)<-c("Pat.Code", "1st_sample", "2nd_sample")
+
+# calculate diff
+group3_duplicates_after_qc$time_diff<-as.numeric(group3_duplicates_after_qc$`2nd_sample`)- as.numeric(group3_duplicates_after_qc$`1st_sample`)
+
+# table
+datatable(group3_duplicates_after_qc)
+
+
+```
+
+
+<p style="color:red">This is the time difference in repeat sampling in group 3</p>
+
+
+```{r}
+# average of difference
+summary(group3_duplicates_after_qc$time_diff)
+
+```
+
+<p style="color:red">**Summary**</p>
+  
+11 patients have been repeated twice:
+  
++ 6 from group 1 (mild)
++ 5 from group 3 (severe)
++ Group 1 average time difference between repeated samples is 16 days
++ Group 3 avarage time difference between repeated samples is 3 days
+
+## summary of demographics in logitudinal patients
+
+summary of demographics of longitudinal patients
+
+```{r}
+group1_duplicates_demographics<-subset(protein_data_clean, protein_data_clean$Pat.Code %in% group1_duplicates_after_qc$Pat.Code)[c(2, 4,5,6)]
+group1_duplicates_demographics<-group1_duplicates_demographics[!duplicated(group1_duplicates_demographics$Pat.Code),]
+
+#age
+CI(group1_duplicates_demographics$Age, ci=0.95)
+
+# gender/ethnicity
+group1_duplicates_demographics
+
+# sampling time
+CI(group1_duplicates_after_qc$`1st_sample`, ci=0.95)
+CI(group1_duplicates_after_qc$`2nd_sample`, ci=0.95)
+CI(group1_duplicates_after_qc$time_diff, ci=0.95)
+
+
+
+
+```
+
+```{r}
+
+group3_duplicates_demographics<-subset(protein_data_clean, protein_data_clean$Pat.Code %in% group3_duplicates_after_qc$Pat.Code)[c(2, 4,5,6)]
+group3_duplicates_demographics<-group3_duplicates_demographics[!duplicated(group3_duplicates_demographics$Pat.Code),]
+
+# age
+CI(group3_duplicates_demographics$Age, ci=0.95)
+
+# gender/ethnicity
+
+# sampling time
+
+CI(group3_duplicates_after_qc$`1st_sample`, ci=0.95)
+CI(group3_duplicates_after_qc$`2nd_sample`, ci=0.95)
+CI(group3_duplicates_after_qc$time_diff, ci=0.95)
+
+
+```
+
+## Days since onset with longitudinal
+
+calculate 95% CI
+
+```{r}
+
+CI(subset(protein_data_clean, protein_data_clean$Group==0)$Days.since.onset, ci=0.95)
+CI(subset(protein_data_clean, protein_data_clean$Group==1)$Days.since.onset, ci=0.95)
+CI(subset(protein_data_clean, protein_data_clean$Group==2)$Days.since.onset, ci=0.95)
+CI(subset(protein_data_clean, protein_data_clean$Group==3)$Days.since.onset, ci=0.95)
+
+# case s control
+CI(subset(protein_data_clean, !(protein_data_clean$Group==0))$Days.since.onset, ci=0.95)
+
+
+```
+
+
+## summary 
+
+Exploration of days since onset. Control group have been set 0
+
+
+```{r}
+# summary
+summary(protein_data_clean$Days.since.onset)
+
+# set controls to 0
+protein_data_clean[is.na(protein_data_clean$Days.since.onset),3]<-0
+
+#plot
+ggplot(data=protein_data_clean, aes(x=as.character(Group), y=Days.since.onset, fill=Group)) +
+  geom_boxplot() +
+  ggtitle("Distribution of onset_days by group") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+<p style="color:red">T-test of Group 1 vs 2 (control vs mild)</p>
+  
+```{r}
+
+# group 1 vs 2
+t.test(protein_data_clean[protein_data_clean$Group==1,3], protein_data_clean[protein_data_clean$Group==2,3])
+
+```
+
+
+<p style="color:red">T-test of Group 2 vs 3 (control vs mild)</p>
+  
+```{r}
+
+# group 2 vs 3
+t.test(protein_data_clean[protein_data_clean$Group==2,3], protein_data_clean[protein_data_clean$Group==3,3])
+
+```
+
+
+<p style="color:red">T-test of Group 1 vs 3 (control vs mild)</p>
+  
+```{r}
+
+# group 1 vs 3
+t.test(protein_data_clean[protein_data_clean$Group==1,3], protein_data_clean[protein_data_clean$Group==3,3])
+
+```
+
+<p style="color:red">**Summary of Days since onset**</p>
+  
++ Signiicantly More Males than females in 0 vs 3, 1 vs 3
++ no significant differnce when comparing controls against all cases (grouped)
+
+
+## Correlation days since onset with severity 
+
+Any Correlation between the days since onset and protein expression?
+
+First check correlation with disease severity as distribution of days since onset was skewed by disease severity
+
+Spearmans used as severity is coded as 0,1,2,3 and is classed as ordinal value while protein expression is continous (non-ordinal).
+
+```{r}
+
+days_since_onset_cor<-rcorr(as.numeric(protein_data_clean[,1]), as.numeric(protein_data_clean[,3]), type="spearman")
+days_since_onset_cor$P[2]
+days_since_onset_cor$r[2]
+
+```
+
+
+<p style="color:red">Days since onset is correlated with disease severity. However, this maybe driven by group 1.</p>
+
+
+## correlation of days of onset within group 1
+
+```{r}
+
+#create subset of group 1
+group1_only<-(subset(protein_data_clean, protein_data_clean$Group==1))
+
+# group1 exprs only
+group1_exprs_only<-group1_only[10:ncol(group1_only)]
+
+# empty dataframe for results
+grp1_cor_days<-as.data.frame(matrix(nrow=nrow(assay_data_clean), ncol=2))
+
+# colnames
+colnames(grp1_cor_days)<-c("cor", "p-value")
+
+# for each protein perform correlation analysis against disease severity (i.e 0,1,2,3) - use expression data only
+for (x in 1:ncol(group1_exprs_only)) {
+  # add protein name
+  rownames(grp1_cor_days)[x]<-colnames(group1_exprs_only)[x]
+  # perform test
+  cor_results_temp<-rcorr(group1_only[,3], group1_exprs_only[,x], type="pearson")
+  #extract cor
+  grp1_cor_days[x,1]<-cor_results_temp$r[2]
+  #extract p -value
+  grp1_cor_days[x,2]<-cor_results_temp$P[2]
+}
+
+# check
+head(grp1_cor_days)
+
+# sort by p-value
+grp1_cor_days<-grp1_cor_days[order(grp1_cor_days$`p-value`, -abs(-grp1_cor_days$cor)),]
+
+# sort by pvalue
+plot(grp1_cor_days[,1], grp1_cor_days[,2])
+
+# how mnay sig
+nrow(subset(grp1_cor_days, grp1_cor_days$`p-value`<0.05))
+
+# sort by pvalue
+grp1_cor_days<-grp1_cor_days[order(grp1_cor_days$`p-value`, -abs(grp1_cor_days$cor)),]
+
+#results table
+datatable(grp1_cor_days)
+
+```
+
+how many postive/negative correlated
+
+```{r}
+
+#positive
+nrow(subset(grp1_cor_days, grp1_cor_days$`p-value`<=0.05 & grp1_cor_days$cor>0))
+
+#negative
+nrow(subset(grp1_cor_days, grp1_cor_days$`p-value`<=0.05 & grp1_cor_days$cor<0))
+
+```
+
+plot in group
+
+
+```{r}
+
+ggplot(data=group1_only[c(3,(grep("OID01018", colnames(group1_only))))], 
+       aes(x=Days.since.onset, y=OID01018)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=F)
+
+
+```
+
+
+plot in all groups (minus control as they are zero)
+
+```{r}
+
+# create cases only group
+cases_only<-protein_data_clean[protein_data_clean$Group!=0,]
+
+# plot
+ggplot(data=cases_only[c(3,(grep("OID01018", colnames(cases_only))))], 
+       aes(x=Days.since.onset, y=OID01018)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=F)
+
+
+
+
+```
+
+## correlation of days of onset within group 2
+
+
+```{r}
+
+#create subset of group 2
+group2_only<-(subset(protein_data_clean, protein_data_clean$Group==2))
+
+# group2 exprs only
+group2_exprs_only<-group2_only[10:ncol(group2_only)]
+
+# empty dataframe for results
+grp2_cor_days<-as.data.frame(matrix(nrow=nrow(assay_data_clean), ncol=2))
+
+# colnames
+colnames(grp2_cor_days)<-c("cor", "p-value")
+
+# for each protein perform correlation analysis against disease severity (i.e 0,1,2,3) - use expression data only
+for (x in 1:ncol(group2_exprs_only)) {
+  # add protein name
+  rownames(grp2_cor_days)[x]<-colnames(group2_exprs_only)[x]
+  # perform test
+  cor_results_temp<-rcorr(group2_only[,3], group2_exprs_only[,x], type="spearman")
+  #extract cor
+  grp2_cor_days[x,1]<-cor_results_temp$r[2]
+  #extract p -value
+  grp2_cor_days[x,2]<-cor_results_temp$P[2]
+}
+
+# check
+head(grp2_cor_days)
+
+# sort by p-value
+grp2_cor_days<-grp2_cor_days[order(grp2_cor_days$`p-value`, -abs(-grp2_cor_days$cor)),]
+
+# sort by pvalue
+plot(grp2_cor_days[,1], grp2_cor_days[,2])
+
+# how mnay sig
+nrow(subset(grp2_cor_days, grp2_cor_days$`p-value`<0.05))
+
+# sort by pvalue
+grp2_cor_days<-grp2_cor_days[order(grp2_cor_days$`p-value`, -abs(grp2_cor_days$cor)),]
+
+#results table
+datatable(grp2_cor_days)
+
+```
+
+how many postive/negative correlated
+
+```{r}
+
+#positive
+nrow(subset(grp2_cor_days, grp2_cor_days$`p-value`<=0.05 & grp2_cor_days$cor>0))
+
+#negative
+nrow(subset(grp2_cor_days, grp2_cor_days$`p-value`<=0.05 & grp2_cor_days$cor<0))
+
+```
+
+plot
+
+```{r}
+
+ggplot(data=group2_only[c(3,(grep("OID00968", colnames(group2_only))))], 
+       aes(x=Days.since.onset, y=OID00968)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=F)
+
+```
+
+plot in all cases
+
+```{r}
+
+# plot
+ggplot(data=cases_only[c(3,(grep("OID00968", colnames(cases_only))))], 
+       aes(x=Days.since.onset, y=OID00968)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=F)
+
+
+
+```
+
+## correlation of days of onset within group 3
+
+```{r}
+  
+#create subset of group 3
+group3_only<-(subset(protein_data_clean, protein_data_clean$Group==3))
+
+# group3 exprs only
+group3_exprs_only<-group3_only[10:ncol(group3_only)]
+
+# empty dataframe for results
+grp3_cor_days<-as.data.frame(matrix(nrow=nrow(assay_data_clean), ncol=2))
+
+# colnames
+colnames(grp3_cor_days)<-c("cor", "p-value")
+
+# for each protein perform correlation analysis against disease severity (i.e 0,1,2,3) - use expression data only
+for (x in 1:ncol(group3_exprs_only)) {
+  # add protein name
+  rownames(grp3_cor_days)[x]<-colnames(group3_exprs_only)[x]
+  # perform test
+  cor_results_temp<-rcorr(group3_only[,3], group3_exprs_only[,x], type="spearman")
+  #extract cor
+  grp3_cor_days[x,1]<-cor_results_temp$r[2]
+  #extract p -value
+  grp3_cor_days[x,2]<-cor_results_temp$P[2]
+}
+
+# check
+head(grp3_cor_days)
+
+# sort by p-value
+grp3_cor_days<-grp3_cor_days[order(grp3_cor_days$`p-value`, -abs(-grp3_cor_days$cor)),]
+
+# sort by pvalue
+plot(grp3_cor_days[,1], grp3_cor_days[,2])
+
+# how mnay sig
+nrow(subset(grp3_cor_days, grp3_cor_days$`p-value`<0.05))
+
+# sort by pvalue
+grp3_cor_days<-grp3_cor_days[order(grp3_cor_days$`p-value`, -abs(grp3_cor_days$cor)),]
+
+#results table
+datatable(grp3_cor_days)
+
+```
+
+
+
+how many postive/negative correlated
+
+```{r}
+
+#positive
+nrow(subset(grp3_cor_days, grp3_cor_days$`p-value`<=0.05 & grp3_cor_days$cor>0))
+
+#negative
+nrow(subset(grp3_cor_days, grp3_cor_days$`p-value`<=0.05 & grp3_cor_days$cor<0))
+
+```
+
+
+
+
+
+```{r}
+
+ggplot(data=group3_only[c(3,(grep("OID01021", colnames(group3_only))))], 
+       aes(x=Days.since.onset, y=OID01021)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=F)
+
+
+```
+
+
+plot in all cases
+
+```{r}
+
+# plot
+ggplot(data=cases_only[c(3,(grep("OID01021", colnames(cases_only))))], 
+       aes(x=Days.since.onset, y=OID01021)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=F)
+
+
+
+```
+
+Check overlap of correlated proteins
+
+```{r}
+
+# move protein name column + add analysis
+grp1_cor_days$OLINK.ID<-rownames(grp1_cor_days)
+grp2_cor_days$OLINK.ID<-rownames(grp2_cor_days)
+grp3_cor_days$OLINK.ID<-rownames(grp3_cor_days)
+
+grp1_cor_days$analysis<-"grp1"
+grp2_cor_days$analysis<-"grp2"
+grp3_cor_days$analysis<-"grp3"
+
+# merge
+grp_cor_merged<-rbind((subset(grp1_cor_days, grp1_cor_days$`p-value`<0.05)),
+(subset(grp2_cor_days, grp2_cor_days$`p-value`<0.05)),
+(subset(grp3_cor_days, grp3_cor_days$`p-value`<0.05)))
+
+# which grps are they
+grp_cor_merged_frq<-(as.data.frame(table(grp_cor_merged$OLINK.ID)))
+grp_cor_merged_frq<-grp_cor_merged_frq[grp_cor_merged_frq$Freq>1,]
+
+# subset to duplicates
+grp_cor_merged_dups<-subset(grp_cor_merged, grp_cor_merged$OLINK.ID %in% grp_cor_merged_frq$Var1)
+grp_cor_merged_dups<-grp_cor_merged_dups[order(grp_cor_merged_dups$`p-value`),]
+head(grp_cor_merged_dups)
+table(grp_cor_merged_dups$OLINK.ID, grp_cor_merged_dups$analysis)
+
+#get gene name
+subset(assay_data_clean, assay_data_clean$OLINK.ID %in% rownames(grp_cor_merged_dups))
+```
+
+
+Plot most sig protein in more than 1 group
+
+```{r}
+
+
+ggplot(data=cases_only[c(3,(grep("OID01018", colnames(cases_only))))], 
+       aes(x=Days.since.onset, y=OID01018)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=F)
+
+
+```
+
+
+<p style="color:red">**Summary of days since onset correlation**</p>
+
++ 42 proteins significantly correlated with days in group 1
++ 12 proteins significantly correlated with days in group 2
++ 49 proteins significantly correlated with days in group 3 
++ 13 proteins in more in 2 groups are correlated with days
+
+
+## days since onset - correlation with controls
+
+MISLEADINg AS SEVERE AND MILD ARE DIFFERENT END OF THE DAYS.SNCE.ONSET SEPCTRUM. any protein that will be DE will alao be correlated. Better to use within groups to see effect of days on expression of protein.
+
+Includes controls which are set to 0.
+
+
+
+```{r}
+
+# copy dataset and change to case vs control
+control_vs_case_dataset<-protein_data_clean
+# change to case and control
+control_vs_case_dataset$Group<-ifelse(control_vs_case_dataset$Group==0, 0, 1)
+
+# exprs only
+control_vs_case_dataset_exprs_onlly<-control_vs_case_dataset[10:ncol(control_vs_case_dataset)]
+
+# empty dataframe for results
+control_vs_case_cor_days<-as.data.frame(matrix(nrow=nrow(assay_data_clean), ncol=2))
+
+# colnames
+colnames(control_vs_case_cor_days)<-c("cor", "p-value")
+
+# for each protein perform correlation analysis against disease severity (i.e 0,1,2,3) - use expression data only
+for (x in 1:ncol(control_vs_case_dataset_exprs_onlly)) {
+  # add protein name
+  rownames(control_vs_case_cor_days)[x]<-colnames(control_vs_case_dataset_exprs_onlly)[x]
+  # perform test
+  cor_results_temp<-rcorr(control_vs_case_dataset[,3], control_vs_case_dataset_exprs_onlly[,x], type="spearman")
+  #extract cor
+  control_vs_case_cor_days[x,1]<-cor_results_temp$r[2]
+  #extract p -value
+  control_vs_case_cor_days[x,2]<-cor_results_temp$P[2]
+}
+
+# check
+head(control_vs_case_cor_days)
+
+# sort by p-value
+control_vs_case_cor_days<-control_vs_case_cor_days[order(control_vs_case_cor_days$`p-value`, -abs(-control_vs_case_cor_days$cor)),]
+
+# sort by pvalue
+plot(control_vs_case_cor_days[,1], control_vs_case_cor_days[,2])
+
+# how mnay sig
+nrow(subset(control_vs_case_cor_days, control_vs_case_cor_days$`p-value`<0.05))
+
+# sort by pvalue
+control_vs_case_cor_days<-control_vs_case_cor_days[order(control_vs_case_cor_days$`p-value`, -abs(control_vs_case_cor_days$cor)),]
+
+#results table
+datatable(control_vs_case_cor_days)
+
+
+
+```
+
+
+plot most sig
+
+```{r}
+
+ggplot(data=control_vs_case_dataset[c(3,(grep("OID00550", colnames(control_vs_case_dataset))))], 
+       aes(x=Days.since.onset, y=OID00550)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=F)
+
+
+
+```
+
+## days since onset - correlation without controls
+
+controls removed. 
+
+
+
+```{r}
+
+# case_expr
+case_expr_only<-cases_only[10:ncol(cases_only)]
+
+# empty dataframe for results
+ind_group_cor_severity<-as.data.frame(matrix(nrow=ncol(case_expr_only), ncol=2))
+
+# colnames
+colnames(ind_group_cor_severity)<-c("cor", "p-value")
+
+# for each protein perform correlation analysis against disease severity (i.e 0,1,2,3) - use expression data only
+for (x in 1:ncol(case_expr_only)) {
+  # add protein name
+  rownames(ind_group_cor_severity)[x]<-colnames(case_expr_only)[x]
+  # perform test
+  cor_results_temp<-rcorr(as.numeric(cases_only[,3]), case_expr_only[,x], type="spearman")
+  #extract cor
+  ind_group_cor_severity[x,1]<-cor_results_temp$r[2]
+  #extract p -value
+  ind_group_cor_severity[x,2]<-cor_results_temp$P[2]
+}
+
+# check
+head(ind_group_cor_severity)
+
+# sort by p-value
+ind_group_cor_severity<-ind_group_cor_severity[order(ind_group_cor_severity$`p-value`, -abs(-ind_group_cor_severity$cor)),]
+
+# sort by pvalue
+plot(ind_group_cor_severity[,1], ind_group_cor_severity[,2])
+
+# how mnay sig
+nrow(subset(ind_group_cor_severity, ind_group_cor_severity$`p-value`<0.05))
+
+# merge with protein ID
+ind_group_cor_severity<-merge(protein_mapping, ind_group_cor_severity, by="row.names")
+# move rownames
+rownames(ind_group_cor_severity)<-ind_group_cor_severity$Row.names
+ind_group_cor_severity$Row.names<-NULL
+
+# sort by pvalue
+ind_group_cor_severity<-ind_group_cor_severity[order(ind_group_cor_severity$`p-value`, -abs(ind_group_cor_severity$cor)),]
+
+#results table
+datatable(ind_group_cor_severity)
+
+```
+
+
+# DATA ANALYSIS
+
+Using Limma for differential expression analysis
+
+create differential expression function:
+
++ uses control vs case (2 groups at a time)
++ controls for age
+
+```{r}
+
+run_limma<-function(groups) {
+  # extract data by group
+  dataset_group<-protein_data_clean[protein_data_clean$Group %in% groups,]
+  print(table(dataset_group$Group))
+  # design a model - control will always be on top as 0
+  design<-model.matrix(~0 + as.factor(dataset_group$Group) + dataset_group$Age + as.factor(dataset_group$Gender) + dataset_group$Days.since.onset)
+  colnames(design)<-c("case", "control", "age", "Gender", "Days.since.onset")
+  # make contrast - what to compare
+  contrast<- makeContrasts(Diff = control - case, levels=design)
+  print(head(contrast))
+  # apply linear model to each protein
+  # Robust regression provides an alternative to least squares regression that works with less restrictive assumptions. Specifically, it provides much better regression coefficient estimates when outliers are present in the data
+  fit<-lmFit(t(dataset_group[10:ncol(dataset_group)]), design=design,  method="robust", maxit=1000)
+  # apply contrast
+  contrast_fit<-contrasts.fit(fit, contrast)
+  # apply empirical Bayes smoothing to the SE
+  ebays_fit<-eBayes(contrast_fit)
+  # summary
+  print(summary(decideTests(ebays_fit)))
+  # extract DE results
+  DE_results<-topTable(ebays_fit, n=ncol(dataset_group), adjust.method="fdr", confint=TRUE)
+  return(DE_results)
+}
+
+```
+
+
+## 0 vs 1 Differential expression
+
+Group 0 vs 1 (control vs mild)
+
+```{r}
+
+# run DE
+group_0_vs_1<-run_limma(groups=c(0,1))
+
+# number of DE proteins
+nrow(subset(group_0_vs_1, group_0_vs_1$adj.P.Val<0.05))
+
+# merge with protein ID
+group_0_vs_1<-merge_protin_ID(group_0_vs_1)
+
+# results
+datatable(format(group_0_vs_1, digits=5))
+
+```
+
+
+
+<p style="color:red">  significant (adjusted p < 0.05) proteins belong to assay: </p>
+
+```{r}  
+
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% rownames(subset(group_0_vs_1, group_0_vs_1$adj.P.Val<0.05)),][1])
+      
+```
+
+Volcano plot of DE results
+
+``` {r}
+
+EnhancedVolcano(group_0_vs_1,
+                lab = rownames(group_0_vs_1),
+                x = 'logFC',
+                y = 'adj.P.Val')
+
+```
+
+Boxplot of most significant protein
+
+```{r}
+
+ggplot(data=protein_data_clean[c(1,(grep("OID00981", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00981, fill=as.character(Group))) +
+  geom_boxplot()
+
+
+```
+
+
+## 0 vs 2 Differential expression
+
+Group 0 vs 2 (control vs mild)
+
+```{r}
+
+# run DE
+group_0_vs_2<-run_limma(groups=c(0,2))
+
+# number of DE proteins
+nrow(subset(group_0_vs_2, group_0_vs_2$adj.P.Val<0.05))
+
+# merge with protein ID
+group_0_vs_2<-merge_protin_ID(group_0_vs_2)
+
+# results
+datatable(format(group_0_vs_2, digits=5))
+
+```
+<p style="color:red">  significant (adjusted p < 0.05) proteins belong to assay: </p>
+
+```{r}  
+
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% rownames(subset(group_0_vs_2, group_0_vs_2$adj.P.Val<0.05)),][1])
+      
+```
+
+
+Volcano plot of DE results
+
+``` {r}
+
+EnhancedVolcano(group_0_vs_2,
+                lab = rownames(group_0_vs_2),
+                x = 'logFC',
+                y = 'adj.P.Val')
+
+```
+
+Boxplot of most significant protein
+
+```{r}
+
+ggplot(data=protein_data_clean[c(1,(grep("OID00374", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00374, fill=as.character(Group))) +
+  geom_boxplot()
+
+
+```
+
+
+## 0 vs 3 Differential expression
+
+Group 0 vs 3 (control vs mild)
+
+```{r}
+
+# run DE
+group_0_vs_3<-run_limma(groups=c(0,3))
+
+# number of DE proteins
+nrow(subset(group_0_vs_3, group_0_vs_3$adj.P.Val<0.05))
+
+# merge with protein ID
+group_0_vs_3<-merge_protin_ID(group_0_vs_3)
+
+# results
+datatable(format(group_0_vs_3, digits=5))
+
+```
+<p style="color:red">  significant (adjusted p < 0.05) proteins belong to assay: </p>
+
+```{r}  
+
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% rownames(subset(group_0_vs_3, group_0_vs_3$adj.P.Val<0.05)),][1])
+      
+```
+
+Volcano plot of DE results
+
+``` {r}
+
+EnhancedVolcano(group_0_vs_3,
+                lab = rownames(group_0_vs_3),
+                x = 'logFC',
+                y = 'adj.P.Val')
+
+```
+
+Most significant protein is NF2 again.
+
+## 1 vs 2 Differential expression
+
+Group 1 vs 2 (mild vs moderate)
+
+```{r}
+
+# run DE
+group_1_vs_2<-run_limma(groups=c(1,2))
+
+# number of DE proteins
+nrow(subset(group_1_vs_2, group_1_vs_2$adj.P.Val<0.05))
+
+# merge with protein ID
+group_1_vs_2<-merge_protin_ID(group_1_vs_2)
+
+# results
+datatable(format(group_1_vs_2, digits=5))
+
+```
+<p style="color:red">  significant (adjusted p < 0.05) proteins belong to assay: </p>
+  
+```{r}  
+
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% rownames(subset(group_1_vs_2, group_1_vs_2$adj.P.Val<0.05)),][1])
+
+```
+
+
+Volcano plot of DE results
+
+``` {r}
+
+EnhancedVolcano(group_1_vs_2,
+                lab = rownames(group_1_vs_2),
+                x = 'logFC',
+                y = 'adj.P.Val')
+
+```
+
+Plot most sig protein
+
+``` {r}
+
+# plot all groups most correlated
+ggplot(data=protein_data_clean[c(1,(grep("OID00541", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00541 , fill=as.character(Group))) +
+  geom_boxplot()
+
+
+````
+
+
+## 1 vs 3 Differential expression
+
+Group 1 vs 3 (mild vs severe)
+
+```{r}
+
+# run DE
+group_1_vs_3<-run_limma(groups=c(1,3))
+
+# number of DE proteins
+nrow(subset(group_1_vs_3, group_1_vs_3$adj.P.Val<0.05))
+
+# merge with protein ID
+group_1_vs_3<-merge_protin_ID(group_1_vs_3)
+
+# results
+datatable(format(group_1_vs_3, digits=5))
+
+```
+<p style="color:red">  significant (adjusted p < 0.05) proteins belong to assay: </p>
+  
+```{r}  
+
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% rownames(subset(group_1_vs_3, group_1_vs_3$adj.P.Val<0.05)),][1])
+
+```
+
+
+Volcano plot of DE results
+
+``` {r}
+
+EnhancedVolcano(group_1_vs_3,
+                lab = rownames(group_1_vs_3),
+                x = 'logFC',
+                y = 'adj.P.Val')
+
+```
+
+Plot most sig protein
+
+``` {r}
+
+# plot all groups most correlated
+ggplot(data=protein_data_clean[c(1,(grep("OID00459", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00459 , fill=as.character(Group))) +
+  geom_boxplot()
+
+
+````
+
+## 2 vs 3 Differential expression
+
+Group 2 vs 3 (moderate vs severe)
+
+```{r}
+
+# run DE
+group_2_vs_3<-run_limma(groups=c(2,3))
+
+# number of DE proteins
+nrow(subset(group_2_vs_3, group_2_vs_3$adj.P.Val<0.05))
+
+# merge with protein ID
+group_2_vs_3<-merge_protin_ID(group_2_vs_3)
+
+# results
+datatable(format(group_2_vs_3, digits=5))
+
+```
+<p style="color:red">  significant (adjusted p < 0.05) proteins belong to assay: </p>
+  
+```{r}  
+
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% rownames(subset(group_2_vs_3, group_2_vs_3$adj.P.Val<0.05)),][1])
+
+```
+
+
+Volcano plot of DE results
+
+``` {r}
+
+EnhancedVolcano(group_2_vs_3,
+                lab = rownames(group_2_vs_3),
+                x = 'logFC',
+                y = 'adj.P.Val')
+
+```
+
+Plot most sig protein
+
+``` {r}
+
+# plot all groups most correlated
+ggplot(data=protein_data_clean[c(1,(grep("OID00517", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00517 , fill=as.character(Group))) +
+  geom_boxplot()
+
+
+````
+
+## case vs control
+
+recode all cases (1,2,3) to case and compare to control
+
+
+```{r}
+
+
+# copy dataset and change to case vs control
+control_vs_case_dataset<-protein_data_clean
+# change to case and control
+control_vs_case_dataset$Group<-ifelse(control_vs_case_dataset$Group==0, 0, 1)
+# check 
+table(control_vs_case_dataset$Group)
+# design a model - control will always be on top as 0
+control_vs_case_design<-model.matrix(~0 + as.factor(control_vs_case_dataset$Group) + control_vs_case_dataset$Age + as.factor(control_vs_case_dataset$Gender) + control_vs_case_dataset$Days.since.onset)
+colnames(control_vs_case_design)<-c("case", "control", "age", "Gender", "Days.since.onset")
+# make contrast - what to compare
+control_vs_case_contrast<- makeContrasts(Diff = control - case, levels=control_vs_case_design)
+head(control_vs_case_contrast)
+# apply linear model to each protein
+# Robust regression provides an alternative to least squares regression that works with less restrictive assumptions. Specifically, it provides much better regression coefficient estimates when outliers are present in the data
+control_vs_case_fit<-lmFit(t(control_vs_case_dataset[10:ncol(control_vs_case_dataset)]), design=control_vs_case_design,  method="robust", maxit=100)
+# apply contrast
+control_vs_case_contrast_fit<-contrasts.fit(control_vs_case_fit, control_vs_case_contrast)
+# apply empirical Bayes smoothing to the SE
+control_vs_case_ebays_fit<-eBayes(control_vs_case_contrast_fit)
+# summary
+print(summary(decideTests(control_vs_case_ebays_fit)))
+# extract DE results
+control_vs_case_DE_results<-topTable(control_vs_case_ebays_fit, n=ncol(control_vs_case_dataset), adjust.method="fdr", confint=TRUE)
+
+# number of DE proteins
+nrow(subset(control_vs_case_DE_results, control_vs_case_DE_results$adj.P.Val<0.05))
+
+# merge with protein ID
+control_vs_case_DE_results<-merge_protin_ID(control_vs_case_DE_results)
+
+# results
+datatable(format(control_vs_case_DE_results, digits=5))
+
+
+```
+<p style="color:red">  significant (adjusted p < 0.05) proteins belong to assay: </p>
+
+```{r}  
+
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% rownames(subset(control_vs_case_DE_results, control_vs_case_DE_results$adj.P.Val<0.05)),][1])
+      
+```
+
+
+Volcano plot of DE results
+
+``` {r}
+
+EnhancedVolcano(control_vs_case_DE_results,
+                lab = rownames(control_vs_case_DE_results),
+                x = 'logFC',
+                y = 'adj.P.Val')
+
+```
+
+NF2 most sig again
+
+## Longitudinal group 1
+
+Differential expression between the 12 samples in group 1 that were repeated at different time points
+
++ 6 patients = 12 samples
++ baseline and first repeat assigned to samples
++ controlling for age + days.since.onset + gender
++ paired t-test
+
+``` {r}
+
+# extract group 1
+group1_duplicates_data<-duplicate_samples_after_qc[duplicate_samples_after_qc$Group==1,]
+# add column for longitudinal analysis - sample.repeat - baseline/first (baseline is always 1st sample)
+group1_duplicates_data$sample.repeat<-"baseline"
+group1_duplicates_data$sample.repeat[c(2,4,6,8,10,12)]<-"first"
+# move sample.repeat to front
+ncol(group1_duplicates_data)
+group1_duplicates_data<-group1_duplicates_data[c(365,1:364)]
+# check
+head(group1_duplicates_data, 12)[1:5]
+table(group1_duplicates_data$sample.repeat)
+# design a model - control will always be on top as 0
+group1_longitudinal_design<-model.matrix(~0 + as.factor(group1_duplicates_data$sample.repeat) + group1_duplicates_data$Age + group1_duplicates_data$Days.since.onset + as.factor(group1_duplicates_data$Gender))
+colnames(group1_longitudinal_design)<-c("baseline", "first", "age", "days.since.onset", "Gender")
+# estimtate correlation between repeated patients
+group1_corfit <- duplicateCorrelation(t(group1_duplicates_data[10:ncol(group1_duplicates_data)]),group1_longitudinal_design,block=group1_duplicates_data$Pat.Code)
+group1_corfit$consensus
+# make contrast - what to compare
+group1_longitudinal_contrast<- makeContrasts(Diff = first - baseline, levels=group1_longitudinal_design)
+head(group1_longitudinal_contrast)
+# add inter-subject correlation to model
+# apply linear model to each protein
+# Robust regression provides an alternative to least squares regression that works with less restrictive assumptions. Specifically, it provides much better regression coefficient estimates when outliers are present in the data
+group1_longitudinal_fit<-lmFit(t(group1_duplicates_data[10:ncol(group1_duplicates_data)]), design=group1_longitudinal_design,  method="robust", maxit=100, correlation = group1_corfit$consensus)
+# apply contrast
+group1_longitudinal_contrast_fit<-contrasts.fit(group1_longitudinal_fit, group1_longitudinal_contrast)
+# apply empirical Bayes smoothing to the SE
+group1_longitudinal_ebays_fit<-eBayes(group1_longitudinal_contrast_fit)
+# summary
+print(summary(decideTests(group1_longitudinal_ebays_fit)))
+# extract DE results
+group1_longitudinal_DE_results<-topTable(group1_longitudinal_ebays_fit, n=ncol(group1_duplicates_data), adjust.method="fdr", confint=TRUE)
+
+# number of DE proteins
+nrow(subset(group1_longitudinal_DE_results, group1_longitudinal_DE_results$adj.P.Val<0.05))
+
+# merge with protein ID
+group1_longitudinal_DE_results<-merge_protin_ID(group1_longitudinal_DE_results)
+
+# results
+datatable(format(group1_longitudinal_DE_results, digits=5))
+
+```
+
+<p style="color:red">  significant (adjusted p < 0.05) proteins belong to assay: </p>
+
+```{r}  
+
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% rownames(subset(group1_longitudinal_DE_results, group1_longitudinal_DE_results$adj.P.Val<0.05)),][1])
+      
+```
+
+Boxplots of most significant proteins
+
+```{r}
+
+# plot by group 1 duplicate
+ggplot(data=group1_duplicates_data[c(1,(grep("OID00386", colnames(group1_duplicates_data))))], 
+       aes(x=sample.repeat, y=OID00386, fill=sample.repeat)) +
+  geom_boxplot()
+
+
+```
+
+
+## Longitudinal group 3
+
+Differential expression between the 10 samples in group 3 that were repeated at different time points
+
++ 5 patients = 10 samples
++ baseline and first repeat assigned to samples
++ controlling for age + days.since.onset
++ paired t-test
++ All males (gender not modelled)
+
+```{r}
+
+# extract group 3
+group3_duplicates_data<-duplicate_samples_after_qc[duplicate_samples_after_qc$Group==3,]
+# add column for longitudinal analysis - sample.repeat - baseline/first (baseline is always 1st sample)
+group3_duplicates_data$sample.repeat<-"baseline"
+group3_duplicates_data$sample.repeat[c(2,4,6,8,10)]<-"first"
+# move sample.repeat to front
+ncol(group3_duplicates_data)
+group3_duplicates_data<-group3_duplicates_data[c(365,1:364)]
+# check
+head(group3_duplicates_data, 12)[1:5]
+table(group3_duplicates_data$sample.repeat)
+# design a model - control will always be on top as 0
+group3_longitudinal_design<-model.matrix(~0 + as.factor(group3_duplicates_data$sample.repeat) + group3_duplicates_data$Age + group3_duplicates_data$Days.since.onset)
+colnames(group3_longitudinal_design)<-c("baseline", "first", "age", "days.since.onset")
+# estimtate correlation between repeated patients
+group3_corfit <- duplicateCorrelation(t(group3_duplicates_data[10:ncol(group3_duplicates_data)]),group3_longitudinal_design,block=group3_duplicates_data$Pat.Code)
+group3_corfit$consensus
+# make contrast - what to compare
+group3_longitudinal_contrast<- makeContrasts(Diff = first - baseline, levels=group3_longitudinal_design)
+head(group3_longitudinal_contrast)
+# add inter-subject correlation to model
+# apply linear model to each protein
+# Robust regression provides an alternative to least squares regression that works with less restrictive assumptions. Specifically, it provides much better regression coefficient estimates when outliers are present in the data
+group3_longitudinal_fit<-lmFit(t(group3_duplicates_data[10:ncol(group3_duplicates_data)]), design=group3_longitudinal_design,  method="robust", maxit=1000, correlation = group3_corfit$consensus)
+# apply contrast
+group3_longitudinal_contrast_fit<-contrasts.fit(group3_longitudinal_fit, group3_longitudinal_contrast)
+# apply empirical Bayes smoothing to the SE
+group3_longitudinal_ebays_fit<-eBayes(group3_longitudinal_contrast_fit)
+# summary
+print(summary(decideTests(group3_longitudinal_ebays_fit)))
+# extract DE results
+group3_longitudinal_DE_results<-topTable(group3_longitudinal_ebays_fit, n=ncol(group3_duplicates_data), adjust.method="fdr", confint=TRUE)
+
+# number of DE proteins
+nrow(subset(group3_longitudinal_DE_results, group3_longitudinal_DE_results$adj.P.Val<0.05))
+
+# merge with protein ID
+group3_longitudinal_DE_results<-merge_protin_ID(group3_longitudinal_DE_results)
+
+# results
+datatable(format(group3_longitudinal_DE_results, digits=5))
+
+
+```
+
+<p style="color:red">  significant (adjusted p < 0.05) proteins belong to assay: </p>
+
+```{r}  
+
+table(assay_data_clean[assay_data_clean$OLINK.ID %in% rownames(subset(group3_longitudinal_DE_results, group3_longitudinal_DE_results$adj.P.Val<0.05)),][1])
+      
+```
+
+Boxplot of most sig
+
+``` {r}
+
+# plot by group 3 duplicate
+ggplot(data=group3_duplicates_data[c(1,(grep("OID00424", colnames(group3_duplicates_data))))], 
+       aes(x=sample.repeat, y=OID00424 , fill=sample.repeat)) +
+  geom_boxplot()
+
+
+
+```
+
+
+## correlation analysis of severity
+
+Any Correlation between the severity of symptoms and protein expression?
+
+from control->mild->moderate->severe
+
+```{r}
+
+# empty dataframe for results
+cor_severity<-as.data.frame(matrix(nrow=nrow(assay_data_clean), ncol=2))
+
+# colnames
+colnames(cor_severity)<-c("cor", "p-value")
+
+# for each protein perform correlation analysis against disease severity (i.e 0,1,2,3) - use expression data only
+for (x in 1:ncol(exprs_only)) {
+  # add protein name
+  rownames(cor_severity)[x]<-colnames(exprs_only)[x]
+  # perform test
+  cor_results_temp<-rcorr(as.numeric(protein_data_clean[,1]), exprs_only[,x], type="spearman")
+  #extract cor
+  cor_severity[x,1]<-cor_results_temp$r[2]
+  #extract p -value
+  cor_severity[x,2]<-cor_results_temp$P[2]
+}
+
+# check
+head(cor_severity)
+
+# sort by p-value
+cor_severity<-cor_severity[order(cor_severity$`p-value`, -abs(-cor_severity$cor)),]
+
+# sort by pvalue
+plot(cor_severity[,1], cor_severity[,2])
+
+# how mnay sig
+nrow(subset(cor_severity, cor_severity$`p-value`<0.05))
+
+# merge with protein ID
+cor_severity<-merge(protein_mapping, cor_severity, by="row.names")
+# move rownames
+rownames(cor_severity)<-cor_severity$Row.names
+cor_severity$Row.names<-NULL
+
+# sort by pvalue
+cor_severity<-cor_severity[order(cor_severity$`p-value`, -abs(cor_severity$cor)),]
+
+#results table
+datatable(cor_severity)
+
+
+```
+
+Plot most correlated
+
+``` {r}
+
+# plot all groups most correlated
+ggplot(data=protein_data_clean[c(1,(grep("OID00999", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00999 , fill=as.character(Group))) +
+  geom_boxplot()
+
+
+```
+
+
+Plot most anti-correlated
+
+``` {r}
+
+# plot most anti-correlated
+ggplot(data=protein_data_clean[c(1,(grep("OID00951", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00951, fill=as.character(Group))) +
+  geom_boxplot()
+
+
+```
+
+
+# SIMOA PROTEINS
+
+Additional measurements of Tau, NfL and GFAP were measured using simoa. Single molecule array (Simoa)
+
++ Tau - a microtubule-associated protein
++ NfL - Neurofilament light polypeptide
++ GFAP - major intermediate filament proteins of mature astrocytes
+
+Pearsons correlation used for this as both continous variable
+
+check correlation of these proteins with other data:
+
+correlation function
+
+```{r}
+
+run_simoa_cor<-function(protein){
+  # protein of interest
+  sim_prot<-protein_data_clean[grep(protein,colnames(protein_data_clean))]
+  # extract simoa protein + remain expr data
+  exprs_only<-protein_data_clean[10:ncol(protein_data_clean)]
+  # empty dataframe for results
+  cor_severity<-as.data.frame(matrix(nrow=nrow(assay_data_clean), ncol=2))
+  # colnames
+  colnames(cor_severity)<-c("cor", "p-value")
+  # loop
+  for (x in 1:ncol(exprs_only)) {
+    # add protein name
+    rownames(cor_severity)[x]<-colnames(exprs_only)[x]
+    # perform test
+    cor_results_temp<-rcorr(log2(sim_prot[,1]), exprs_only[,x], type="pearson")
+    #extract cor
+    cor_severity[x,1]<-cor_results_temp$r[2]
+    #extract p -value
+    cor_severity[x,2]<-cor_results_temp$P[2]
+  }
+  # sort by p-value
+  cor_severity<-cor_severity[order(cor_severity$`p-value`, -abs(-cor_severity$cor)),]
+  # merge with protein ID
+  cor_severity<-merge(protein_mapping, cor_severity, by="row.names")
+  # move rownames
+  rownames(cor_severity)<-cor_severity$Row.names
+  cor_severity$Row.names<-NULL
+  # sort by pvalue
+  cor_severity<-cor_severity[order(cor_severity$`p-value`, -abs(cor_severity$cor)),]
+  return(cor_severity)
+}
+
+```
+
+differenital expression function
+
+
+
+## Apply function to Tau
+
+```{r}
+
+#Tau
+Tau_cor<-run_simoa_cor("Tau")
+# how many sig
+nrow(subset(Tau_cor, Tau_cor$`p-value`<=0.05))
+# head
+head(Tau_cor)
+```
+
+Plot most correlated
+
+``` {r}
+
+# plot all groups most correlated
+ggplot(data=protein_data_clean[c(1,(grep("OID00380", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00380 , fill=as.character(Group))) +
+  geom_boxplot()
+
+
+```
+
+
+## Apply function to NfL
+
+```{r}
+
+#NfL
+NfL_cor<-run_simoa_cor("NfL")
+# how many sig
+nrow(subset(NfL_cor, NfL_cor$`p-value`<=0.05))
+# head
+head(NfL_cor)
+```
+
+Plot most correlated
+
+``` {r}
+
+# plot all groups most correlated
+ggplot(data=protein_data_clean[c(1,(grep("OID00370", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00370 , fill=as.character(Group))) +
+  geom_boxplot()
+
+
+```
+
+## Apply function to GFAP
+
+```{r}
+
+#GFAP
+GFAP_cor<-run_simoa_cor("GFAP")
+# how many sig
+nrow(subset(GFAP_cor, GFAP_cor$`p-value`<=0.05))
+# head
+head(GFAP_cor)
+```
+
+Plot most correlated
+
+``` {r}
+
+# plot all groups most correlated
+ggplot(data=protein_data_clean[c(1,(grep("OID00380", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00380 , fill=as.character(Group))) +
+  geom_boxplot()
+
+
+````
+
+
+# OUTPUT
+
+save data
+
+## Clean expression data
+
+``` {r}
+
+saveRDS(protein_data_clean, file=paste(output_dir, "Processed_data/protein_data_clean.RDS", sep="/"))
+        
+```
+
+## Clean protein info
+
+``` {r}
+
+saveRDS(assay_data_clean, file=paste(output_dir, "Processed_data/assay_data_clean.RDS", sep="/"))
+        
+```
+
+
+## 0 vs 1
+
+``` {r}
+
+saveRDS(group_0_vs_1, file=paste(output_dir, "Result/group_0_vs_1.RDS", sep="/"))
+write.table(subset(group_0_vs_1, group_0_vs_1$adj.P.Val<=0.05)[3], file="Result/group_0_vs_1.txt", col.names = F, row.names = F, quote=F)
+        
+```
+
+## 0 vs 2
+
+```{r}
+
+saveRDS(group_0_vs_2, file=paste(output_dir, "Result/group_0_vs_2.RDS", sep="/"))
+write.table(subset(group_0_vs_2, group_0_vs_2$adj.P.Val<=0.05)[3], file="Result/group_0_vs_2.txt", col.names = F, row.names = F, quote=F)
+        
+```
+
+## 0 vs 3
+
+```{r}
+
+saveRDS(group_0_vs_3, file=paste(output_dir, "Result/group_0_vs_3.RDS", sep="/"))
+write.table(subset(group_0_vs_3, group_0_vs_3$adj.P.Val<=0.05)[3], file="Result/group_0_vs_3.txt", col.names = F, row.names = F, quote=F)
+
+```
+## 1 vs 2
+
+``` {r}
+
+saveRDS(group_1_vs_2, file=paste(output_dir, "Result/group_1_vs_2.RDS", sep="/"))
+write.table(subset(group_1_vs_2, group_1_vs_2$adj.P.Val<=0.05)[3], file="Result/group_1_vs_2.txt", col.names = F, row.names = F, quote=F)
+
+
+```
+
+## 1 vs 3
+
+``` {r}
+
+saveRDS(group_1_vs_3, file=paste(output_dir, "Result/group_1_vs_3.RDS", sep="/"))
+write.table(subset(group_1_vs_3, group_1_vs_3$adj.P.Val<=0.05)[3], file="Result/group_1_vs_3.txt", col.names = F, row.names = F, quote=F)
+
+
+```
+
+## 2 vs 3
+
+``` {r}
+
+saveRDS(group_2_vs_3, file=paste(output_dir, "Result/group_2_vs_3.RDS", sep="/"))
+write.table(subset(group_2_vs_3, group_2_vs_3$adj.P.Val<=0.05)[3], file="Result/group_2_vs_3.txt", col.names = F, row.names = F, quote=F)
+
+
+```
+## control vs case
+
+``` {r}
+
+saveRDS(control_vs_case_DE_results, file=paste(output_dir, "Result/control_vs_case_DE_results.RDS", sep="/"))
+write.table(subset(control_vs_case_DE_results, control_vs_case_DE_results$adj.P.Val<=0.05)[3], file="Result/control_vs_case_DE_results.txt", col.names = F, row.names = F, quote=F)
+
+        
+```
+
+
+## Longitudinal group 1
+
+``` {r}
+
+saveRDS(group1_longitudinal_DE_results, file=paste(output_dir, "Result/group1_longitudinal_DE_results.RDS", sep="/"))
+write.table(subset(group1_longitudinal_DE_results, group1_longitudinal_DE_results$adj.P.Val<=0.05)[3], file="Result/group1_longitudinal_DE_results.txt", col.names = F, row.names = F, quote=F)
+
+        
+```
+
+
+## Longitudinal group 3
+
+
+``` {r}
+
+saveRDS(group3_longitudinal_DE_results, file=paste(output_dir, "Result/group3_longitudinal_DE_results.RDS", sep="/"))
+write.table(subset(group3_longitudinal_DE_results, group3_longitudinal_DE_results$adj.P.Val<=0.05)[3], file="Result/group3_longitudinal_DE_results.txt", col.names = F, row.names = F, quote=F)
+
+        
+```
+
+## Infection severity correlation
+
+``` {r}
+
+saveRDS(cor_severity, file=paste(output_dir, "Result/cor_severity.RDS", sep="/"))
+        
+```
+
+## SIMOA protein cor
+
+```{r}
+
+write.table(GFAP_cor, file=paste(output_dir, "Result/GFAP_correlation.txt", sep="/"), quote=F, sep="\t")
+write.table(Tau_cor, file=paste(output_dir, "Result/Tau_correlation.txt", sep="/"), quote=F, sep="\t")
+write.table(NfL_cor, file=paste(output_dir, "Result/NfL_correlation.txt", sep="/"), quote=F, sep="\t")
+
+
+```
+
+
+## Merge results for Shiny app
+
+
+```{r}
+
+# check colnames
+
+colnames(group_0_vs_1)
+colnames(group_0_vs_2)
+colnames(group_0_vs_3)
+colnames(group_1_vs_2)
+colnames(group_1_vs_3)
+colnames(group_2_vs_3)
+colnames(control_vs_case_DE_results)
+colnames(group1_longitudinal_DE_results)
+colnames(group3_longitudinal_DE_results)
+
+# add comparison
+group_0_vs_1$Comparison<-"Control_v_Mild"
+group_0_vs_2$Comparison<-"Control_v_Severe"
+group_0_vs_3$Comparison<-"Control_v_Critical"
+group_1_vs_2$Comparison<-"Mild_v_Severe"
+group_1_vs_3$Comparison<-"Mild_v_Critical"
+group_2_vs_3$Comparison<-"Severe_v_Critical"
+control_vs_case_DE_results$Comparison<-"Control_v_Case"
+group1_longitudinal_DE_results$Comparison<-"Longitudinal_in_Mild"
+group3_longitudinal_DE_results$Comparison<-"Longitudinal_in_Critical"
+
+# move rownames to column
+# add comparison
+group_0_vs_1$OLINK.ID<-rownames(group_0_vs_1)
+group_0_vs_2$OLINK.ID<-rownames(group_0_vs_2)
+group_0_vs_3$OLINK.ID<-rownames(group_0_vs_3)
+group_1_vs_2$OLINK.ID<-rownames(group_1_vs_2)
+group_1_vs_3$OLINK.ID<-rownames(group_1_vs_3)
+group_2_vs_3$OLINK.ID<-rownames(group_2_vs_3)
+control_vs_case_DE_results$OLINK.ID<-rownames(control_vs_case_DE_results)
+group1_longitudinal_DE_results$OLINK.ID<-rownames(group1_longitudinal_DE_results)
+group3_longitudinal_DE_results$OLINK.ID<-rownames(group3_longitudinal_DE_results)
+
+# merge
+Full_results<-rbind(group_0_vs_1,
+                    group_0_vs_2,
+                    group_0_vs_3,
+                    group_1_vs_2,
+                    group_1_vs_3,
+                    group_2_vs_3,
+                    control_vs_case_DE_results,
+                    group1_longitudinal_DE_results,
+                    group3_longitudinal_DE_results)
+
+
+# Adding correlation within groups
+# Full_results$cor.with.days<-ifelse(Full_results$OLINK.ID %in% grp_cor_merged$OLINK.ID, "Yes", "No")
+
+# rearrange columns
+Full_results<-Full_results[c(12, 1, 13, 2, 3, 4, 5, 6, 7, 9, 10)]
+
+dim(Full_results)
+head(Full_results)
+
+#save 
+saveRDS(Full_results, file=paste(output_dir, "Result/Full_results.RDS", sep="/"))
+write.table(Full_results, file=paste(output_dir, "Result/Full_results.txt", sep="/"), quote=F, sep="\t", row.names = F)
+
+```
+
+
+## Enrichment test
+
+output files for enrichment test. Using uniprot ID
+
+``` {r}
+
+# list of background
+write.table(assay_data_clean$Uniprot.ID, file=paste(output_dir, "/Result/For_enrichment_test/background_list.txt", sep="/"), row.names = F, col.names = F, quote=F)
+
+# group_0_vs_1
+write.table(subset(group_0_vs_1, group_0_vs_1$adj.P.Val<=0.05)[3], 
+            file=paste(output_dir, "/Result/For_enrichment_test/group_0_vs_1.txt", sep="/"), 
+            row.names = F, 
+            col.names = F, 
+            quote=F)
+
+# group_0_vs_2
+write.table(subset(group_0_vs_2, group_0_vs_2$adj.P.Val<=0.05)[3], 
+            file=paste(output_dir, "/Result/For_enrichment_test/group_0_vs_2.txt", sep="/"), 
+            row.names = F, 
+            col.names = F, 
+            quote=F)
+
+
+# group_0_vs_3
+write.table(subset(group_0_vs_3, group_0_vs_3$adj.P.Val<=0.05)[3], 
+            file=paste(output_dir, "/Result/For_enrichment_test/group_0_vs_3.txt", sep="/"), 
+            row.names = F, 
+            col.names = F, 
+            quote=F)
+
+# group_1_vs_2
+write.table(subset(group_1_vs_2, group_1_vs_2$adj.P.Val<=0.05)[3], 
+            file=paste(output_dir, "/Result/For_enrichment_test/group_1_vs_2.txt", sep="/"), 
+            row.names = F, 
+            col.names = F, 
+            quote=F)
+
+# group_1_vs_3
+write.table(subset(group_1_vs_3, group_1_vs_3$adj.P.Val<=0.05)[3], 
+            file=paste(output_dir, "/Result/For_enrichment_test/group_1_vs_3.txt", sep="/"), 
+            row.names = F, 
+            col.names = F, 
+            quote=F)
+
+# group_2_vs_3
+write.table(subset(group_2_vs_3, group_2_vs_3$adj.P.Val<=0.05)[3], 
+            file=paste(output_dir, "/Result/For_enrichment_test/group_2_vs_3.txt", sep="/"), 
+            row.names = F, 
+            col.names = F, 
+            quote=F)
+
+# control_vs_case_DE_results
+write.table(subset(control_vs_case_DE_results, control_vs_case_DE_results$adj.P.Val<=0.05)[3], 
+            file=paste(output_dir, "/Result/For_enrichment_test/control_vs_case_DE_results.txt", sep="/"), 
+            row.names = F, 
+            col.names = F, 
+            quote=F)
+
+# group1_longitudinal_DE_results
+write.table(subset(group1_longitudinal_DE_results, group1_longitudinal_DE_results$adj.P.Val<=0.05)[3], 
+            file=paste(output_dir, "/Result/For_enrichment_test/group1_longitudinal_DE_results.txt", sep="/"), 
+            row.names = F, 
+            col.names = F, 
+            quote=F)
+
+# group3_longitudinal_DE_results
+write.table(subset(group3_longitudinal_DE_results, group3_longitudinal_DE_results$adj.P.Val<=0.05)[3], 
+            file=paste(output_dir, "/Result/For_enrichment_test/group3_longitudinal_DE_results.txt", sep="/"), 
+            row.names = F, 
+            col.names = F, 
+            quote=F)
+
+
+
+```
+
+
+# INTERPRETATION 
+
+## number of DE across analyses
+
+``` {r}
+# function to calculate number of sig proteins
+
+summarise_DE_by_p<-function(ED_results, analysis_name){
+  # emtpy data frame - 1 column, 3 rows
+  results<-as.data.frame(matrix(ncol=1, nrow=3))
+  #add colname
+  colnames(results)<-analysis_name
+  # add rownames
+  rownames(results)<-c("Down", "NotSig", "Up")
+  # number of up regulated proteins
+  results[1,1]<-nrow(subset(ED_results, ED_results$adj.P.Val<0.05 & logFC>0))
+  # number of non sig
+  results[2,1]<-nrow(subset(ED_results, ED_results$adj.P.Val>=0.05))
+  # number of down sig regulted proteins
+  results[3,1]<-nrow(subset(ED_results, ED_results$adj.P.Val<0.05 & logFC<0))
+  return(results)
+}
+
+# apply function
+
+group_0_vs_1_DE_count <- summarise_DE_by_p(group_0_vs_1, "Control_v_Mild")
+group_0_vs_2_DE_count <- summarise_DE_by_p(group_0_vs_2, "Control_v_Moderate")
+group_0_vs_3_DE_count <- summarise_DE_by_p(group_0_vs_3 , "Control_v_Severe")
+group_1_vs_2_DE_count <- summarise_DE_by_p(group_1_vs_2 , "Mild_v_Moderate")
+group_1_vs_3_DE_count <- summarise_DE_by_p(group_1_vs_3 , "Mild_v_Severe")
+group_2_vs_3_DE_count <- summarise_DE_by_p(group_2_vs_3 , "Moderate_v_Severe")
+control_vs_case_DE_count <- summarise_DE_by_p(control_vs_case_DE_results , "Control_v_Case")
+group1_longitudinal_DE_count <- summarise_DE_by_p(group1_longitudinal_DE_results , "Longitudinal_in_Mild")
+group3_longitudinal_DE_count <- summarise_DE_by_p(group3_longitudinal_DE_results , "Longitudinal_in_Severe")
+
+# merg results
+
+DE_result_count<-cbind(group_0_vs_1_DE_count,
+                       group_0_vs_2_DE_count,
+                       group_0_vs_3_DE_count,
+                       group_1_vs_2_DE_count,
+                       group_1_vs_3_DE_count,
+                       group_2_vs_3_DE_count,
+                       control_vs_case_DE_count,
+                       group1_longitudinal_DE_count,
+                       group3_longitudinal_DE_count)
+
+# check
+DE_result_count
+
+```
+
+## Proteins sig across control->mild->moderate->severe
+
+These proteins are sig between:
+
+1. control -> mild
+2. control -> moderate
+3. control -> severe
+
+```{r}
+# extract proteins sig diff in group 0->1->2->3
+proteins_sig_across_all<-subset(Full_results, Full_results$Comparison=="Control_v_Mild" & Full_results$adj.P.Val<=0.05 |
+  Full_results$Comparison=="Mild_v_Critical" & Full_results$adj.P.Val<=0.05 |
+  Full_results$Comparison=="Severe_v_Critical" & Full_results$adj.P.Val<=0.05)
+
+# keep only those that are repeated 3 times
+proteins_sig_across_all<-subset(proteins_sig_across_all, proteins_sig_across_all$OLINK.ID %in% subset(as.data.frame(table(proteins_sig_across_all$OLINK.ID)), Freq==3)$Var1)
+
+# sort by OLINK
+proteins_sig_across_all<-proteins_sig_across_all[order(proteins_sig_across_all$OLINK.ID),]
+
+# check
+head(proteins_sig_across_all)
+nrow(proteins_sig_across_all)
+
+# empty list to remove
+proteins_sig_across_all_to_remove<-vector()
+
+# keep proteins where logFC is same direction in all analysis
+for (x in seq(1, nrow(proteins_sig_across_all),3)) {
+  # extract fold change by 3
+  numbers<-proteins_sig_across_all$logFC[x:(x+2)]
+  if(all(numbers>0)==F & all(numbers<0)==F) {
+    proteins_sig_across_all_to_remove<-c(proteins_sig_across_all_to_remove, proteins_sig_across_all$OLINK.ID[x])
+  }
+}
+
+# remove
+proteins_sig_across_all<-subset(proteins_sig_across_all, !(proteins_sig_across_all$OLINK.ID %in% proteins_sig_across_all_to_remove))
+nrow(proteins_sig_across_all)  
+  
+# sort b =p
+proteins_sig_across_all<-proteins_sig_across_all[order(proteins_sig_across_all$adj.P.Val),]
+proteins_sig_across_all
+
+# multiple gene names
+#proteins_sig_across_all$Gene.ID<-droplevels(proteins_sig_across_all$Gene.ID)
+table(proteins_sig_across_all$Gene.ID)
+
+
+```
+
+plot
+
+```{r}
+
+
+# plot most anti-correlated
+ggplot(data=protein_data_clean[c(1,(grep("OID00390", colnames(protein_data_clean))))], 
+         aes(x=as.character(Group), y=OID00390, fill=as.character(Group))) +
+    geom_boxplot()
+
+ggplot(data=protein_data_clean[c(1,(grep("OID00985", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00985, fill=as.character(Group))) +
+  geom_boxplot()
+
+ggplot(data=protein_data_clean[c(1,(grep("OID00406", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00406, fill=as.character(Group))) +
+  geom_boxplot()
+
+ggplot(data=protein_data_clean[c(1,(grep("OID00389", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00389, fill=as.character(Group))) +
+  geom_boxplot()
+
+ggplot(data=protein_data_clean[c(1,(grep("OID00965", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00965, fill=as.character(Group))) +
+  geom_boxplot()
+
+ggplot(data=protein_data_clean[c(1,(grep("OID00518", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00518, fill=as.character(Group))) +
+  geom_boxplot()
+
+
+```
+
+Summary:
+
++ 9 proteins sig dif
++ 6 unique:
+    + CKAP4
+    + Gal-9
+    + IL-1ra
+    + IL6
+    + LILRB4
+    + PD-L1
++ 
+
+## Manuscript plots
+
+plots
+
+
+```{r, eval=F}
+
+tiff(file=paste(paste(output_dir, "plots/NF2.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00981", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00981, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("NF2 Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+NF2 <- protein_data_clean[c(1,2,3,4,5,6, (grep("OID00981", colnames(protein_data_clean))))]
+
+# order
+NF2<-NF2[order(NF2$Group),]
+
+# add level
+NF2$sample<-1:nrow(NF2)
+
+tiff(file=paste(paste(output_dir, "plots/NF2_individual.tiff", sep="/")), width = 10, height = 10, units = 'in', res = 300)
+ggplot(data= NF2, aes(x=sample, y=OID00981, fill=as.character(Group))) +
+  geom_bar(stat="identity") +
+  labs(x = "Samples",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("NF2 Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+tiff(file=paste(paste(output_dir, "plots/CKAP4.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00985", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00985, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("CKAP4 Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+tiff(file=paste(paste(output_dir, "plots/Gal-9.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00406", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00406, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("Gal-9 Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+tiff(file=paste(paste(output_dir, "plots/IL-1ra.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00389", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00389, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("IL-1ra Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+tiff(file=paste(paste(output_dir, "plots/PD-L1.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00518", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00518, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("PD-L1 Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+tiff(file=paste(paste(output_dir, "plots/LILRB4.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00965", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00965, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("LILRB4 Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+
+tiff(file=paste(paste(output_dir, "plots/EDA2R.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00370", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00370, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("EDA2R Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+
+tiff(file=paste(paste(output_dir, "plots/SCARB2.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00300", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00300, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("SCARB2 Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+tiff(file=paste(paste(output_dir, "plots/MANF.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00374", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00374, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("MANF Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+tiff(file=paste(paste(output_dir, "plots/LAT.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00371", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00371, fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("LAT Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+tiff(file=paste(paste(output_dir, "plots/SIGLEC1.tiff", sep="/")))
+ggplot(data=protein_data_clean[c(1,(grep("OID00315", colnames(protein_data_clean))))], 
+       aes(x=as.character(Group), y=OID00315 , fill=as.character(Group))) +
+  geom_boxplot() +
+  labs(x = "Disease Group",
+       y = "Expression (NPX)") + 
+  scale_fill_discrete(name = "Disease Group", labels = c("Control", "Mild", "Severe", "Critical")) +
+  scale_x_discrete(labels=c("0" = "Control", "1" = "Mild", "2" = "Severe", "3" = "Critical")) +
+  ggtitle("SIGLEC1 Expression")+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+```
+
+## save data
+
+```{r}
+
+#save
+
+save.image(file=paste(output_dir, "analysis.RData", sep="/"))
+
+
+```
